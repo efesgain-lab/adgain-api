@@ -228,7 +228,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           situacao_i,
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_ha
-        FROM incra.sigef_all
+        FROM incra.sigef_mt
         WHERE geom && ST_GeomFromText($1)
           AND ST_Contains(geom, ST_GeomFromText($1))
         LIMIT 1
@@ -245,7 +245,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           num_certif as situacao_i,
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(qtd_area_p::numeric AS numeric), 2) as area_ha
-        FROM incra.snci_all
+        FROM incra.snci_mt
         WHERE geom && ST_GeomFromText($1)
           AND ST_Contains(geom, ST_GeomFromText($1))
         LIMIT 1
@@ -377,7 +377,7 @@ app.post('/api/analises', async (req, res) => {
             s.registro_m,
             TO_CHAR(s.registro_d, 'DD/MM/YYYY')  as registro_d,
             ROUND(CAST(ST_Area(ST_Transform(s.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-          FROM incra.sigef_all s
+          FROM incra.sigef_mt s
           WHERE s.geom && ST_SetSRID(ST_GeomFromGeoJSON($1), ${SRID})
             AND ST_Intersects(s.geom, ST_SetSRID(ST_GeomFromGeoJSON($1), ${SRID}))
             AND NOT ST_Touches(s.geom, ST_SetSRID(ST_GeomFromGeoJSON($1), ${SRID}))
@@ -398,7 +398,7 @@ app.post('/api/analises', async (req, res) => {
               s.registro_m,
               TO_CHAR(s.registro_d, 'DD/MM/YYYY')  as registro_d,
               ROUND(CAST(ST_Area(ST_Transform(ST_SetSRID(s.geom, ${SRID}), 32721)) / 10000 AS numeric), 2) as area_hectares
-            FROM incra.sigef_all s
+            FROM incra.sigef_mt s
             WHERE ST_SetSRID(s.geom, 0) && ST_GeomFromGeoJSON($1)
               AND ST_Intersects(ST_SetSRID(s.geom, 0), ST_GeomFromGeoJSON($1))
               AND NOT ST_Touches(ST_SetSRID(s.geom, 0), ST_GeomFromGeoJSON($1))
@@ -465,7 +465,7 @@ app.post('/api/analises', async (req, res) => {
             TO_CHAR(s.data_certi, 'DD/MM/YYYY') as data_certi,
             s.qtd_area_p,
             ROUND(CAST(s.qtd_area_p AS numeric), 2) as area_hectares
-          FROM incra.snci_all s
+          FROM incra.snci_mt s
           WHERE s.geom && ST_SetSRID(ST_GeomFromGeoJSON($1), ${SRID})
             AND ST_Intersects(s.geom, ST_SetSRID(ST_GeomFromGeoJSON($1), ${SRID}))
             AND NOT ST_Touches(s.geom, ST_SetSRID(ST_GeomFromGeoJSON($1), ${SRID}))
@@ -481,7 +481,7 @@ app.post('/api/analises', async (req, res) => {
               TO_CHAR(s.data_certi, 'DD/MM/YYYY') as data_certi,
               s.qtd_area_p,
               ROUND(CAST(s.qtd_area_p AS numeric), 2) as area_hectares
-            FROM incra.snci_all s
+            FROM incra.snci_mt s
             WHERE ST_SetSRID(s.geom, 0) && ST_GeomFromGeoJSON($1)
               AND ST_Intersects(ST_SetSRID(s.geom, 0), ST_GeomFromGeoJSON($1))
               AND NOT ST_Touches(ST_SetSRID(s.geom, 0), ST_GeomFromGeoJSON($1))
@@ -1570,8 +1570,8 @@ app.get('/api/camadas/:camada', async (req, res) => {
 
     // Config per camada: table, select expression — columns from Adgain_Mapeamento_Completo.xlsx
     const camadaConfig = {
-      sigef:        { table: 'incra.sigef_all',                             select: `parcela_co as fid, nome_area as nome` },
-      snci:         { table: 'incra.snci_all',                              select: `cod_imovel as fid, nome_imove as nome` },
+      sigef:        { table: 'incra.sigef_mt',                             select: `parcela_co as fid, nome_area as nome` },
+      snci:         { table: 'incra.snci_mt',                              select: `cod_imovel as fid, nome_imove as nome` },
       car:          { table: sicarDisponivel ? 'sicar.area_imovel' : 'car.area_imovel_all', select: `cod_imovel as fid, cod_imovel as nome`, extraWhere: `AND des_condic NOT ILIKE '%cancelado%'` },
       bioma:        { table: 'bioma.bioma_250',                             select: `"Bioma" as fid, "Bioma" as nome` },
       tis:          { table: 'terra_indigena.tis_poligonais',               select: `terrai_nom as fid, terrai_nom as nome` },
@@ -1605,7 +1605,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
         pool.query(`
           SELECT parcela_co as fid, nome_area as nome,
             ST_AsGeoJSON(ST_Simplify(geom, ${tolerance})) as geometry
-          FROM incra.sigef_all
+          FROM incra.sigef_mt
           WHERE geom && ${envelope}
             AND ST_Intersects(geom, ${envelope})
           ORDER BY geom <-> ${centerPt}
@@ -1614,7 +1614,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
         pool.query(`
           SELECT cod_imovel as fid, nome_imove as nome,
             ST_AsGeoJSON(ST_Simplify(geom, ${tolerance})) as geometry
-          FROM incra.snci_all
+          FROM incra.snci_mt
           WHERE geom && ${envelope}
             AND ST_Intersects(geom, ${envelope})
           ORDER BY geom <-> ${centerPt}
