@@ -1539,14 +1539,20 @@ app.post('/api/analises', async (req, res) => {
 app.get('/api/camadas/:camada', async (req, res) => {
   try {
     const { camada } = req.params;
-    const { bbox, radius = 0.05 } = req.query;
+    const { bbox, lat, lng, raio, radius = 0.5 } = req.query;
 
-    if (!bbox) {
-      return res.status(400).json({ error: 'bbox query parameter required' });
+    let minLng, minLat, maxLng, maxLat;
+    if (bbox) {
+      [minLng, minLat, maxLng, maxLat] = bbox.split(',').map(Number);
+    } else if (lat && lng) {
+      const raioKm = parseFloat(raio) || 50;
+      const dLat = raioKm / 111.0;
+      const dLng = raioKm / (111.0 * Math.cos(parseFloat(lat) * Math.PI / 180));
+      minLat = parseFloat(lat) - dLat; maxLat = parseFloat(lat) + dLat;
+      minLng = parseFloat(lng) - dLng; maxLng = parseFloat(lng) + dLng;
+    } else {
+      return res.status(400).json({ error: 'bbox or lat/lng required' });
     }
-
-    // Parse bbox: minLng,minLat,maxLng,maxLat
-    const [minLng, minLat, maxLng, maxLat] = bbox.split(',').map(Number);
 
     // Limite dinâmico baseado no zoom: zoom amplo → poucos polígonos; zoom alto → muitos
     const zoom = Math.floor(parseFloat(req.query.zoom)) || 10;
