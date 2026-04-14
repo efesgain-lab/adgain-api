@@ -674,18 +674,30 @@ app.post('/api/analises', async (req, res) => {
     };
 
     try {
-      let anmResult = await pool.query(`
-        SELECT
-          "PROCESSO" as numero_processo,
-          "FASE"     as fase,
-          "NOME"     as titular,
-          "SUBS"     as substancia
-        FROM anm.anm_mt
-        WHERE ST_Intersects(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        )
-      `, [geojsonStr]);
+      // Tenta tabela específica do estado detectado, senão tenta anm_all ou anm_mt como fallback
+      const ufLower = (municipio.uf || 'MT').toLowerCase();
+      const anmTables = [`anm.anm_${ufLower}`, 'anm.anm_all', 'anm.anm_mt'];
+      let anmResult = { rows: [] };
+      for (const anmTable of anmTables) {
+        try {
+          anmResult = await pool.query(`
+            SELECT
+              "PROCESSO" as numero_processo,
+              "FASE"     as fase,
+              "NOME"     as titular,
+              "SUBS"     as substancia
+            FROM ${anmTable}
+            WHERE ST_Intersects(
+              CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+            )
+          `, [geojsonStr]);
+          console.log(`[ANM] ${anmTable}: ${anmResult.rows.length} processos`);
+          break; // se chegou aqui, a tabela existe
+        } catch(e2) {
+          console.log(`[ANM] tabela ${anmTable} não disponível, tentando próxima...`);
+        }
+      }
       analyses['9.6_mineracao'].processes = anmResult.rows;
     } catch(e) { console.error('ANM query error:', e.message); }
     analyses['9.6_mineracao'].occurrences = [];
