@@ -12,6 +12,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // Database connection pool
+// family:4 força IPv4 (Render.com não suporta IPv6 outbound — Supabase resolve para IPv6)
 const pool = new Pool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
@@ -19,6 +20,10 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   client_encoding: 'UTF8',
+  family: 4,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  max: 10,
 });
 
 const SRID = 4674; // SIRGAS 2000
