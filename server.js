@@ -38,24 +38,75 @@ function buildGeomFilter(geomColumn, expectedSrid = 4674) {
   return `CASE WHEN ST_SRID(${geomColumn}) = 0 THEN ST_SetSRID(${geomColumn}, ${expectedSrid}) ELSE ${geomColumn} END`;
 }
 
+// Approximate bounding boxes [minLng, minLat, maxLng, maxLat] — module-level for reuse
+const STATE_BBOX = {
+  ac: [-74.0,-11.15,-66.5,-7.1],   al: [-38.25,-10.5,-35.15,-8.8],
+  am: [-73.8,-9.9,-56.1,2.3],      ap: [-52.0,1.0,-49.9,4.45],
+  ba: [-46.6,-18.35,-37.3,-8.5],   ce: [-41.4,-7.85,-37.25,-2.75],
+  df: [-48.3,-16.05,-47.3,-15.5],  es: [-41.9,-21.3,-39.6,-17.9],
+  go: [-53.3,-19.5,-45.9,-12.4],   ma: [-48.7,-10.25,-41.8,-1.05],
+  mg: [-51.05,-22.95,-39.85,-14.25],ms: [-58.2,-24.1,-50.95,-17.2],
+  mt: [-61.6,-18.05,-50.2,-7.35],  pa: [-58.5,-9.85,-46.0,2.6],
+  pb: [-38.8,-8.35,-34.8,-6.0],    pe: [-41.35,-9.5,-34.8,-7.15],
+  pi: [-45.95,-10.95,-40.35,-2.75],pr: [-54.65,-26.75,-48.05,-22.5],
+  rj: [-44.9,-23.4,-40.95,-20.75], rn: [-38.6,-6.99,-35.0,-4.85],
+  ro: [-66.85,-13.7,-59.85,-7.95], rr: [-64.8,1.25,-59.8,5.3],
+  rs: [-57.65,-33.75,-49.7,-27.1], sc: [-53.85,-29.4,-48.35,-25.95],
+  se: [-38.25,-11.6,-36.4,-9.5],   sp: [-53.15,-25.35,-44.15,-19.8],
+  to: [-50.75,-13.5,-45.7,-5.15],
+};
+
+/**
+ * Determines UF from lat/lng using hardcoded bounding boxes — no DB required.
+ * Returns the UF whose bbox contains the point (smallest area wins for overlaps).
+ */
+function getUFFromPointFallback(lat, lng) {
+  const matches = ALL_UFS.filter(uf => {
+    const b = STATE_BBOX[uf];
+    if (!b) return false;
+    return lng >= b[0] && lng <= b[2] && lat >= b[1] && lat <= b[3];
+  });
+  if (matches.length === 0) return null;
+  // Pick the state with the smallest bounding box area (most specific match)
+  return matches.sort((a, b) => {
+    const ba = STATE_BBOX[a], bb = STATE_BBOX[b];
+    return ((ba[2]-ba[0]) * (ba[3]-ba[1])) - ((bb[2]-bb[0]) * (bb[3]-bb[1]));
+  })[0];
+}
+
 /**
  * Determines the UF (state abbreviation, lowercase) from a lat/lng point
- * Uses ibge.municipios_2020 table
- * Falls back to null if not found
+ * Uses ibge.municipios_2020 table, falls back to bbox matching
  */
 async function getUFFromPoint(lat, lng) {
   try {
-    const point = `SRID=${SRID};POINT(${lng} ${lat})`;
+    // Use ST_SetSRID + ST_MakePoint (avoids EWKT parsing issues with ST_GeomFromText)
     const result = await pool.query(`
       SELECT LOWER(uf) as uf_lower
       FROM ibge.municipios_2020
-      WHERE ST_Contains(geom, ST_GeomFromText($1))
+      WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), ${SRID}))
       LIMIT 1
-    `, [point]);
+    `, [lng, lat]);
     return result.rows[0]?.uf_lower || null;
   } catch (e) {
+    console.warn('getUFFromPoint DB query failed:', e.message);
     return null;
   }
+}
+
+/**
+ * Resolves UF from DB first, falls back to bbox matching — never defaults to 'mt'
+ */
+async function resolveUF(lat, lng) {
+  const ufFromDb = await getUFFromPoint(lat, lng);
+  if (ufFromDb) return ufFromDb;
+  const ufFromBbox = getUFFromPointFallback(lat, lng);
+  if (ufFromBbox) {
+    console.warn(`UF resolved via bbox fallback: ${ufFromBbox} for lat=${lat} lng=${lng}`);
+    return ufFromBbox;
+  }
+  console.warn(`UF not resolved, defaulting to mt for lat=${lat} lng=${lng}`);
+  return 'mt';
 }
 
 /**
@@ -87,24 +138,6 @@ const ALL_UFS = [
  * Uses hardcoded state bboxes — no ibge dependency.
  */
 function getUFsFromBbox(minLng, minLat, maxLng, maxLat) {
-  // Approximate bounding boxes [minLng, minLat, maxLng, maxLat] for each state
-  const STATE_BBOX = {
-    ac: [-74.0,-11.15,-66.5,-7.1],   al: [-38.25,-10.5,-35.15,-8.8],
-    am: [-73.8,-9.9,-56.1,2.3],      ap: [-52.0,1.0,-49.9,4.45],
-    ba: [-46.6,-18.35,-37.3,-8.5],   ce: [-41.4,-7.85,-37.25,-2.75],
-    df: [-48.3,-16.05,-47.3,-15.5],  es: [-41.9,-21.3,-39.6,-17.9],
-    go: [-53.3,-19.5,-45.9,-12.4],   ma: [-48.7,-10.25,-41.8,-1.05],
-    mg: [-51.05,-22.95,-39.85,-14.25],ms: [-58.2,-24.1,-50.95,-17.2],
-    mt: [-61.6,-18.05,-50.2,-7.35],  pa: [-58.5,-9.85,-46.0,2.6],
-    pb: [-38.8,-8.35,-34.8,-6.0],    pe: [-41.35,-9.5,-34.8,-7.15],
-    pi: [-45.95,-10.95,-40.35,-2.75],pr: [-54.65,-26.75,-48.05,-22.5],
-    rj: [-44.9,-23.4,-40.95,-20.75], rn: [-38.6,-6.99,-35.0,-4.85],
-    ro: [-66.85,-13.7,-59.85,-7.95], rr: [-64.8,1.25,-59.8,5.3],
-    rs: [-57.65,-33.75,-49.7,-27.1], sc: [-53.85,-29.4,-48.35,-25.95],
-    se: [-38.25,-11.6,-36.4,-9.5],   sp: [-53.15,-25.35,-44.15,-19.8],
-    to: [-50.75,-13.5,-45.7,-5.15],
-  };
-
   const overlapping = ALL_UFS.filter(uf => {
     const b = STATE_BBOX[uf];
     if (!b) return true; // include if unknown
@@ -189,8 +222,8 @@ app.post('/api/buscar-feicao', async (req, res) => {
 
     const point = `SRID=${SRID};POINT(${longitude} ${latitude})`;
 
-    // Determine UF dynamically from coordinates
-    const uf = await getUFFromPoint(latitude, longitude) || 'mt';
+    // Determine UF dynamically from coordinates (DB → bbox fallback, never hardcoded 'mt')
+    const uf = await resolveUF(latitude, longitude);
     const sigefTable = `incra.sigef_${uf}`;
     const snciTable = `incra.snci_${uf}`;
     const carTable = `car.area_imovel_${uf}`;
@@ -296,6 +329,18 @@ app.post('/api/analises', async (req, res) => {
     let ufFallback = null;
     if (!municResult.rows[0]) {
       ufFallback = await getUFFromGeoJSON(geojsonStr);
+      // If DB failed, try centroid bbox fallback
+      if (!ufFallback) {
+        try {
+          const centroidRes = await pool.query(
+            `SELECT ST_X(ST_Centroid(ST_GeomFromGeoJSON($1::jsonb->'geometry'))) as lng,
+                    ST_Y(ST_Centroid(ST_GeomFromGeoJSON($1::jsonb->'geometry'))) as lat`,
+            [geojsonStr]
+          );
+          const c = centroidRes.rows[0];
+          if (c) ufFallback = getUFFromPointFallback(c.lat, c.lng);
+        } catch (_) {}
+      }
     }
 
     const municipio = municResult.rows[0] || {
