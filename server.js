@@ -75,52 +75,44 @@ async function getUFFromGeoJSON(geojsonStr) {
   }
 }
 
-/**
- * Brazilian states approximate bounding boxes: [minLng, minLat, maxLng, maxLat]
- * Used to determine which states intersect a viewport bbox without any DB query.
- */
-const UF_BBOXES = {
-  ac: [-73.99, -11.14, -66.62,  -7.11],
-  al: [-38.24, -10.50, -35.15,  -8.81],
-  am: [-73.80,  -9.82, -56.10,   2.25],
-  ap: [-51.27,  -1.24, -49.87,   4.44],
-  ba: [-46.62, -18.35, -37.35,  -8.53],
-  ce: [-41.43,  -7.85, -37.25,  -2.77],
-  df: [-48.28, -16.05, -47.31, -15.50],
-  es: [-41.88, -21.32, -39.69, -17.88],
-  go: [-53.23, -19.48, -45.90, -12.40],
-  ma: [-48.74, -10.26, -41.76,  -1.04],
-  mg: [-51.04, -22.91, -39.86, -14.24],
-  ms: [-58.16, -24.06, -50.92, -17.16],
-  mt: [-61.63, -18.03, -50.22,  -7.35],
-  pa: [-58.90,  -9.84, -46.02,   2.59],
-  pb: [-38.82,  -8.29, -34.79,  -6.03],
-  pe: [-41.36,  -9.48, -32.38,  -7.17],
-  pi: [-45.99, -10.91, -40.37,  -2.73],
-  pr: [-54.62, -26.71, -48.03, -22.52],
-  rj: [-44.90, -23.37, -40.95, -20.76],
-  rn: [-38.58,  -6.98, -35.07,  -4.83],
-  ro: [-66.76, -13.70, -59.76,  -7.97],
-  rr: [-64.82,   1.23, -59.84,   5.27],
-  rs: [-57.63, -33.75, -49.69, -27.09],
-  sc: [-53.84, -29.35, -48.36, -25.96],
-  se: [-38.26, -11.56, -36.40,  -9.54],
-  sp: [-53.11, -25.31, -44.16, -19.78],
-  to: [-50.73, -13.46, -45.57,  -5.19],
-};
+// All 27 Brazilian state codes (lowercase) — used for state-partitioned layer queries
+const ALL_UFS = [
+  'ac','al','am','ap','ba','ce','df','es','go',
+  'ma','mg','ms','mt','pa','pb','pe','pi','pr',
+  'rj','rn','ro','rr','rs','sc','se','sp','to'
+];
 
 /**
- * Returns ALL UF abbreviations (lowercase) whose bbox intersects the given viewport bbox.
- * Pure JS — no DB query, no fallback needed.
+ * Returns UF codes whose approximate bounding box overlaps the given bbox.
+ * Uses hardcoded state bboxes — no ibge dependency.
  */
 function getUFsFromBbox(minLng, minLat, maxLng, maxLat) {
-  const ufs = Object.entries(UF_BBOXES)
-    .filter(([, b]) =>
-      minLng <= b[2] && maxLng >= b[0] &&  // longitude overlap
-      minLat <= b[3] && maxLat >= b[1]      // latitude overlap
-    )
-    .map(([uf]) => uf);
-  return ufs.length > 0 ? ufs : ['mt'];
+  // Approximate bounding boxes [minLng, minLat, maxLng, maxLat] for each state
+  const STATE_BBOX = {
+    ac: [-74.0,-11.15,-66.5,-7.1],   al: [-38.25,-10.5,-35.15,-8.8],
+    am: [-73.8,-9.9,-56.1,2.3],      ap: [-52.0,1.0,-49.9,4.45],
+    ba: [-46.6,-18.35,-37.3,-8.5],   ce: [-41.4,-7.85,-37.25,-2.75],
+    df: [-48.3,-16.05,-47.3,-15.5],  es: [-41.9,-21.3,-39.6,-17.9],
+    go: [-53.3,-19.5,-45.9,-12.4],   ma: [-48.7,-10.25,-41.8,-1.05],
+    mg: [-51.05,-22.95,-39.85,-14.25],ms: [-58.2,-24.1,-50.95,-17.2],
+    mt: [-61.6,-18.05,-50.2,-7.35],  pa: [-58.5,-9.85,-46.0,2.6],
+    pb: [-38.8,-8.35,-34.8,-6.0],    pe: [-41.35,-9.5,-34.8,-7.15],
+    pi: [-45.95,-10.95,-40.35,-2.75],pr: [-54.65,-26.75,-48.05,-22.5],
+    rj: [-44.9,-23.4,-40.95,-20.75], rn: [-38.6,-6.99,-35.0,-4.85],
+    ro: [-66.85,-13.7,-59.85,-7.95], rr: [-64.8,1.25,-59.8,5.3],
+    rs: [-57.65,-33.75,-49.7,-27.1], sc: [-53.85,-29.4,-48.35,-25.95],
+    se: [-38.25,-11.6,-36.4,-9.5],   sp: [-53.15,-25.35,-44.15,-19.8],
+    to: [-50.75,-13.5,-45.7,-5.15],
+  };
+
+  const overlapping = ALL_UFS.filter(uf => {
+    const b = STATE_BBOX[uf];
+    if (!b) return true; // include if unknown
+    // Check overlap: not (maxLng < b[0] || minLng > b[2] || maxLat < b[1] || minLat > b[3])
+    return !(maxLng < b[0] || minLng > b[2] || maxLat < b[1] || minLat > b[3]);
+  });
+
+  return overlapping.length > 0 ? overlapping : ALL_UFS;
 }
 
 /**
@@ -242,7 +234,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
       result = await safeQuery(`
         SELECT
           'CAR' as source,
-          id,
+          gid as id,
           numero_imovel as numero,
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
@@ -669,7 +661,7 @@ app.post('/api/analises', async (req, res) => {
 
     let carAreaResult = await safeQuery(`
       SELECT
-        id,
+        gid as id,
         numero_imovel,
         ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM ${carAreaTable}
@@ -845,11 +837,11 @@ app.get('/api/camadas/:camada', async (req, res) => {
     const bboxWkt = `SRID=${SRID};POLYGON((${minLng} ${minLat}, ${maxLng} ${minLat}, ${maxLng} ${maxLat}, ${minLng} ${maxLat}, ${minLng} ${minLat}))`;
     const geomExpr = `CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END`;
 
-    // State-partitioned layers: query ALL states overlapping bbox (Brasil inteiro)
+    // State-partitioned layers: query ALL states that intersect the bbox (UNION ALL)
     const stateLayerConfig = {
-      sigef: { schema: 'incra', prefix: 'sigef',       idCol: 'id', labelCol: 'numero_imovel' },
-      snci:  { schema: 'incra', prefix: 'snci',        idCol: 'id', labelCol: 'numero' },
-      car:   { schema: 'car',   prefix: 'area_imovel', idCol: 'id', labelCol: 'numero_imovel' },
+      sigef: { schema: 'incra', prefix: 'sigef',       idCol: 'gid', labelCol: 'parcela_co' },
+      snci:  { schema: 'incra', prefix: 'snci',        idCol: 'gid', labelCol: 'num_proces' },
+      car:   { schema: 'car',   prefix: 'area_imovel', idCol: 'gid', labelCol: 'cod_imovel' },
     };
 
     // Static (non-partitioned) layers
@@ -864,29 +856,27 @@ app.get('/api/camadas/:camada', async (req, res) => {
     let idCol, labelCol;
 
     if (stateLayerConfig[camada]) {
-      // MULTI-STATE: pure-JS bbox intersect → no DB needed for state detection
+      // MULTI-STATE: find all UFs overlapping bbox, query each table in parallel
       const cfg = stateLayerConfig[camada];
       idCol = cfg.idCol;
       labelCol = cfg.labelCol;
 
       const ufs = getUFsFromBbox(minLng, minLat, maxLng, maxLat);
-      console.log(`[camadas/${camada}] UFs no bbox: ${ufs.join(', ')}`);
 
-      // Query each state individually with safeQuery so missing tables return [] not error
+      // Query each state table safely (tables without data return empty array)
       const perStateResults = await Promise.all(
         ufs.map(u => safeQuery(
           `SELECT ${idCol}, ${labelCol} as label,
              ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry
            FROM ${cfg.schema}.${cfg.prefix}_${u}
            WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
-           LIMIT 500`,
+           LIMIT 200`,
           [bboxWkt]
         ))
       );
 
-      // Merge all rows, cap at 500 total
+      // Merge all rows and cap at 500
       const allRows = perStateResults.flatMap(r => r.rows).slice(0, 500);
-
       const features = allRows
         .filter(row => row.geometry != null)
         .map(row => ({
@@ -899,6 +889,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
       return res.json({ type: 'FeatureCollection', features });
 
     } else if (staticLayerConfig[camada]) {
+      // STATIC: single table, existing logic
       const cfg = staticLayerConfig[camada];
       idCol = cfg.idCol;
       labelCol = cfg.labelCol;
