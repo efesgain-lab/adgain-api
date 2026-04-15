@@ -76,23 +76,51 @@ async function getUFFromGeoJSON(geojsonStr) {
 }
 
 /**
- * Returns ALL UF abbreviations (lowercase) whose geometry intersects the given bbox.
- * Used to query multiple state-partitioned tables for Brazil-wide layers (SIGEF/SNCI/CAR).
+ * Brazilian states approximate bounding boxes: [minLng, minLat, maxLng, maxLat]
+ * Used to determine which states intersect a viewport bbox without any DB query.
  */
-async function getUFsFromBbox(minLng, minLat, maxLng, maxLat) {
-  try {
-    const bboxWkt = `SRID=${SRID};POLYGON((${minLng} ${minLat}, ${maxLng} ${minLat}, ${maxLng} ${maxLat}, ${minLng} ${maxLat}, ${minLng} ${minLat}))`;
-    const result = await pool.query(`
-      SELECT DISTINCT LOWER(uf) as uf_lower
-      FROM ibge.municipios_2020
-      WHERE ST_Intersects(geom, ST_GeomFromText($1))
-    `, [bboxWkt]);
-    const ufs = result.rows.map(r => r.uf_lower).filter(u => /^[a-z]{2}$/.test(u));
-    return ufs.length > 0 ? ufs : null;
-  } catch (e) {
-    console.error('getUFsFromBbox error:', e.message);
-    return null;
-  }
+const UF_BBOXES = {
+  ac: [-73.99, -11.14, -66.62,  -7.11],
+  al: [-38.24, -10.50, -35.15,  -8.81],
+  am: [-73.80,  -9.82, -56.10,   2.25],
+  ap: [-51.27,  -1.24, -49.87,   4.44],
+  ba: [-46.62, -18.35, -37.35,  -8.53],
+  ce: [-41.43,  -7.85, -37.25,  -2.77],
+  df: [-48.28, -16.05, -47.31, -15.50],
+  es: [-41.88, -21.32, -39.69, -17.88],
+  go: [-53.23, -19.48, -45.90, -12.40],
+  ma: [-48.74, -10.26, -41.76,  -1.04],
+  mg: [-51.04, -22.91, -39.86, -14.24],
+  ms: [-58.16, -24.06, -50.92, -17.16],
+  mt: [-61.63, -18.03, -50.22,  -7.35],
+  pa: [-58.90,  -9.84, -46.02,   2.59],
+  pb: [-38.82,  -8.29, -34.79,  -6.03],
+  pe: [-41.36,  -9.48, -32.38,  -7.17],
+  pi: [-45.99, -10.91, -40.37,  -2.73],
+  pr: [-54.62, -26.71, -48.03, -22.52],
+  rj: [-44.90, -23.37, -40.95, -20.76],
+  rn: [-38.58,  -6.98, -35.07,  -4.83],
+  ro: [-66.76, -13.70, -59.76,  -7.97],
+  rr: [-64.82,   1.23, -59.84,   5.27],
+  rs: [-57.63, -33.75, -49.69, -27.09],
+  sc: [-53.84, -29.35, -48.36, -25.96],
+  se: [-38.26, -11.56, -36.40,  -9.54],
+  sp: [-53.11, -25.31, -44.16, -19.78],
+  to: [-50.73, -13.46, -45.57,  -5.19],
+};
+
+/**
+ * Returns ALL UF abbreviations (lowercase) whose bbox intersects the given viewport bbox.
+ * Pure JS — no DB query, no fallback needed.
+ */
+function getUFsFromBbox(minLng, minLat, maxLng, maxLat) {
+  const ufs = Object.entries(UF_BBOXES)
+    .filter(([, b]) =>
+      minLng <= b[2] && maxLng >= b[0] &&  // longitude overlap
+      minLat <= b[3] && maxLat >= b[1]      // latitude overlap
+    )
+    .map(([uf]) => uf);
+  return ufs.length > 0 ? ufs : ['mt'];
 }
 
 /**
@@ -836,22 +864,39 @@ app.get('/api/camadas/:camada', async (req, res) => {
     let idCol, labelCol;
 
     if (stateLayerConfig[camada]) {
-      // MULTI-STATE: find all UFs overlapping bbox, build UNION ALL query
+      // MULTI-STATE: pure-JS bbox intersect → no DB needed for state detection
       const cfg = stateLayerConfig[camada];
       idCol = cfg.idCol;
       labelCol = cfg.labelCol;
 
-      const ufs = (await getUFsFromBbox(minLng, minLat, maxLng, maxLat)) || ['mt'];
+      const ufs = getUFsFromBbox(minLng, minLat, maxLng, maxLat);
       console.log(`[camadas/${camada}] UFs no bbox: ${ufs.join(', ')}`);
 
-      const unionParts = ufs.map(u =>
-        `SELECT ${idCol}, ${labelCol} as label,
-           ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry
-         FROM ${cfg.schema}.${cfg.prefix}_${u}
-         WHERE ST_Intersects(${geomExpr}, ST_GeomFromText('${bboxWkt}'))`
+      // Query each state individually with safeQuery so missing tables return [] not error
+      const perStateResults = await Promise.all(
+        ufs.map(u => safeQuery(
+          `SELECT ${idCol}, ${labelCol} as label,
+             ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry
+           FROM ${cfg.schema}.${cfg.prefix}_${u}
+           WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+           LIMIT 500`,
+          [bboxWkt]
+        ))
       );
 
-      query = `SELECT * FROM (${unionParts.join(' UNION ALL ')}) _combined LIMIT 500`;
+      // Merge all rows, cap at 500 total
+      const allRows = perStateResults.flatMap(r => r.rows).slice(0, 500);
+
+      const features = allRows
+        .filter(row => row.geometry != null)
+        .map(row => ({
+          type: 'Feature',
+          id: row[idCol],
+          properties: { label: row.label },
+          geometry: JSON.parse(row.geometry),
+        }));
+
+      return res.json({ type: 'FeatureCollection', features });
 
     } else if (staticLayerConfig[camada]) {
       const cfg = staticLayerConfig[camada];
