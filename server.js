@@ -925,30 +925,26 @@ app.get('/api/camadas/:camada', async (req, res) => {
 
       const ufs = getUFsFromBbox(minLng, minLat, maxLng, maxLat);
 
-      // Centro do viewport
+      // Centro do viewport para ordenar do centro para fora
       const centerLng = (minLng + maxLng) / 2;
       const centerLat = (minLat + maxLat) / 2;
 
-      // Raio de busca = 40% da meia-diagonal do viewport
-      // Concentra os polígonos ao redor do centro em vez de cobrir todo o bbox
-      const halfW = (maxLng - minLng) / 2;
-      const halfH = (maxLat - minLat) / 2;
-      const searchRadius = Math.sqrt(halfW * halfW + halfH * halfH) * 0.4;
-
       // Query each state table safely (tables without data return empty array)
       const extraFilter = cfg.filter ? `AND ${cfg.filter}` : '';
-      const centerPoint = `ST_SetSRID(ST_MakePoint($1, $2), ${SRID})`;
       const perStateResults = await Promise.all(
         ufs.map(u => safeQuery(
           `SELECT ${idCol}, ${labelCol} as label,
              ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry,
-             ST_Distance(ST_Centroid(${geomExpr}), ${centerPoint}) as dist_center
+             ST_Distance(
+               ST_Centroid(${geomExpr}),
+               ST_SetSRID(ST_MakePoint($2, $3), ${SRID})
+             ) as dist_center
            FROM ${cfg.schema}.${cfg.prefix}_${u}
-           WHERE ST_DWithin(${geomExpr}, ${centerPoint}, $3)
+           WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
              ${extraFilter}
            ORDER BY dist_center ASC
            LIMIT 200`,
-          [centerLng, centerLat, searchRadius]
+          [bboxWkt, centerLng, centerLat]
         ))
       );
 
