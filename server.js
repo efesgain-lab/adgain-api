@@ -250,6 +250,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_GeomFromText($1)
         )
+        ORDER BY ST_Area(geom) ASC
         LIMIT 1
       `, [point]);
 
@@ -267,6 +268,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
             CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
             ST_GeomFromText($1)
           )
+          ORDER BY ST_Area(geom) ASC
           LIMIT 1
         `, [point]);
       }
@@ -288,6 +290,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
         )
           AND des_condic IS DISTINCT FROM 'Cancelado por decisao administrativa'
           AND ind_status IS DISTINCT FROM 'CA'
+        ORDER BY ST_Area(geom) ASC
         LIMIT 1
       `, [point]);
     }
