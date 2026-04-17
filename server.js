@@ -241,12 +241,12 @@ app.post('/api/buscar-feicao', async (req, res) => {
       result = await safeQuery(`
         SELECT
           'SIGEF' as source,
-          id,
-          numero_imovel as numero,
+          gid as id,
+          parcela_co as numero,
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable}
-        WHERE ST_Contains(
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_GeomFromText($1)
         )
@@ -258,12 +258,12 @@ app.post('/api/buscar-feicao', async (req, res) => {
         result = await safeQuery(`
           SELECT
             'SNCI' as source,
-            id,
-            numero as numero,
+            gid as id,
+            num_proces as numero,
             ST_AsGeoJSON(geom) as geojson,
             ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
           FROM ${snciTable}
-          WHERE ST_Contains(
+          WHERE ST_Intersects(
             CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
             ST_GeomFromText($1)
           )
