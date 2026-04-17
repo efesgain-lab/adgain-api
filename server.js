@@ -216,6 +216,12 @@ app.post('/api/buscar-feicao', async (req, res) => {
     const latitude = lat;
     const longitude = lng;
 
+    // Respeita as camadas ativas enviadas pelo frontend
+    // ['sigef'] → só SIGEF/SNCI | ['car'] → só CAR | [] ou undefined → cascata completa
+    const camadasAtivas = req.body.camadasAtivas;
+    const querySigef = !camadasAtivas || camadasAtivas.length === 0 || camadasAtivas.includes('sigef');
+    const queryCar   = !camadasAtivas || camadasAtivas.length === 0 || camadasAtivas.includes('car');
+
     if (!longitude || !latitude) {
       return res.status(400).json({ error: 'lat/lng required' });
     }
@@ -228,42 +234,46 @@ app.post('/api/buscar-feicao', async (req, res) => {
     const snciTable = `incra.snci_${uf}`;
     const carTable = `car.area_imovel_${uf}`;
 
-    // Try SIGEF first
-    let result = await safeQuery(`
-      SELECT
-        'SIGEF' as source,
-        id,
-        numero_imovel as numero,
-        ST_AsGeoJSON(geom) as geojson,
-        ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-      FROM ${sigefTable}
-      WHERE ST_Contains(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_GeomFromText($1)
-      )
-      LIMIT 1
-    `, [point]);
+    let result = { rows: [] };
 
-    // Try SNCI if SIGEF empty
-    if (result.rows.length === 0) {
+    // Busca SIGEF apenas se a camada estiver ativa
+    if (querySigef) {
       result = await safeQuery(`
         SELECT
-          'SNCI' as source,
+          'SIGEF' as source,
           id,
-          numero as numero,
+          numero_imovel as numero,
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${snciTable}
+        FROM ${sigefTable}
         WHERE ST_Contains(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_GeomFromText($1)
         )
         LIMIT 1
       `, [point]);
+
+      // Busca SNCI se SIGEF vazio (SIGEF/SNCI são agrupados na mesma camada)
+      if (result.rows.length === 0) {
+        result = await safeQuery(`
+          SELECT
+            'SNCI' as source,
+            id,
+            numero as numero,
+            ST_AsGeoJSON(geom) as geojson,
+            ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          FROM ${snciTable}
+          WHERE ST_Contains(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_GeomFromText($1)
+          )
+          LIMIT 1
+        `, [point]);
+      }
     }
 
-    // Try CAR if SNCI empty
-    if (result.rows.length === 0) {
+    // Busca CAR apenas se a camada estiver ativa (e SIGEF/SNCI não encontraram nada)
+    if (queryCar && result.rows.length === 0) {
       result = await safeQuery(`
         SELECT
           'CAR' as source,
