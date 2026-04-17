@@ -925,9 +925,15 @@ app.get('/api/camadas/:camada', async (req, res) => {
 
       const ufs = getUFsFromBbox(minLng, minLat, maxLng, maxLat);
 
-      // Centro do viewport para ordenar do centro para fora
+      // Centro do viewport
       const centerLng = (minLng + maxLng) / 2;
       const centerLat = (minLat + maxLat) / 2;
+
+      // Raio de busca = 40% da meia-diagonal do viewport
+      // Concentra os polígonos ao redor do centro em vez de cobrir todo o bbox
+      const halfW = (maxLng - minLng) / 2;
+      const halfH = (maxLat - minLat) / 2;
+      const searchRadius = Math.sqrt(halfW * halfW + halfH * halfH) * 0.4;
 
       // Query each state table safely (tables without data return empty array)
       const extraFilter = cfg.filter ? `AND ${cfg.filter}` : '';
@@ -940,11 +946,15 @@ app.get('/api/camadas/:camada', async (req, res) => {
                ST_SetSRID(ST_MakePoint($2, $3), ${SRID})
              ) as dist_center
            FROM ${cfg.schema}.${cfg.prefix}_${u}
-           WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+           WHERE ST_DWithin(
+             ${geomExpr},
+             ST_SetSRID(ST_MakePoint($2, $3), ${SRID}),
+             $4
+           )
              ${extraFilter}
            ORDER BY dist_center ASC
            LIMIT 200`,
-          [bboxWkt, centerLng, centerLat]
+          [bboxWkt, centerLng, centerLat, searchRadius]
         ))
       );
 
