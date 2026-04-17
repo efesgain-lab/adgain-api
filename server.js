@@ -278,14 +278,16 @@ app.post('/api/buscar-feicao', async (req, res) => {
         SELECT
           'CAR' as source,
           gid as id,
-          numero_imovel as numero,
+          cod_imovel as numero,
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${carTable}
-        WHERE ST_Contains(
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_GeomFromText($1)
         )
+          AND des_condic IS DISTINCT FROM 'Cancelado por decisao administrativa'
+          AND ind_status IS DISTINCT FROM 'CA'
         LIMIT 1
       `, [point]);
     }
@@ -896,7 +898,9 @@ app.get('/api/camadas/:camada', async (req, res) => {
     const stateLayerConfig = {
       sigef: { schema: 'incra', prefix: 'sigef',       idCol: 'gid', labelCol: 'parcela_co' },
       snci:  { schema: 'incra', prefix: 'snci',        idCol: 'gid', labelCol: 'num_proces' },
-      car:   { schema: 'car',   prefix: 'area_imovel', idCol: 'gid', labelCol: 'cod_imovel' },
+      car:   { schema: 'car',   prefix: 'area_imovel', idCol: 'gid', labelCol: 'cod_imovel',
+               // Excluir imóveis CAR cancelados administrativamente
+               filter: "des_condic IS DISTINCT FROM 'Cancelado por decisao administrativa' AND ind_status IS DISTINCT FROM 'CA'" },
     };
 
     // Static (non-partitioned) layers
@@ -919,12 +923,14 @@ app.get('/api/camadas/:camada', async (req, res) => {
       const ufs = getUFsFromBbox(minLng, minLat, maxLng, maxLat);
 
       // Query each state table safely (tables without data return empty array)
+      const extraFilter = cfg.filter ? `AND ${cfg.filter}` : '';
       const perStateResults = await Promise.all(
         ufs.map(u => safeQuery(
           `SELECT ${idCol}, ${labelCol} as label,
              ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry
            FROM ${cfg.schema}.${cfg.prefix}_${u}
            WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             ${extraFilter}
            LIMIT 200`,
           [bboxWkt]
         ))
