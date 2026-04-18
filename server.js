@@ -329,14 +329,14 @@ app.post('/api/analises', async (req, res) => {
     const geojsonStr = JSON.stringify(feature);
 
     // Get centroid and municipality info
-    let municResult = await pool.query(`
+    let municResult = await safeQuery(`
       SELECT
         m.nome as municipio,
         m.uf,
         ST_AsGeoJSON(ST_Centroid(ST_GeomFromGeoJSON($1::jsonb->'geometry'))) as centroid,
-        ROUND(CAST(ST_Area(ST_Transform(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 32721)) / 10000 AS numeric), 2) as area_hectares
+        ROUND(CAST(ST_Area(ST_Transform(ST_Envelope(ST_GeomFromGeoJSON($1::jsonb->'geometry')), 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM ibge.municipios_2020 m
-      WHERE ST_Intersects(m.geom, ST_GeomFromGeoJSON($1::jsonb->'geometry'))
+      WHERE ST_Intersects(m.geom, ST_Envelope(ST_GeomFromGeoJSON($1::jsonb->'geometry')))
       LIMIT 1
     `, [geojsonStr]);
 
@@ -347,7 +347,7 @@ app.post('/api/analises', async (req, res) => {
       // If DB failed, try centroid bbox fallback
       if (!ufFallback) {
         try {
-          const centroidRes = await pool.query(
+          const centroidRes = await safeQuery(
             `SELECT ST_X(ST_Centroid(ST_GeomFromGeoJSON($1::jsonb->'geometry'))) as lng,
                     ST_Y(ST_Centroid(ST_GeomFromGeoJSON($1::jsonb->'geometry'))) as lat`,
             [geojsonStr]
