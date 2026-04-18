@@ -481,20 +481,21 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.4_bioma'].data = biomaResult.rows;
 
-    // 9.5 Geologia (Litoestratigrafia with percentages)
+    // 9.5 Geologia — usa geol_ponto (nm_unidade) pois litoestratigrafia_br não tem permissão de acesso
     analyses['9.5_geologia'] = { nome: 'Geologia', data: [] };
     let geologiaResult = await safeQuery(`
-      SELECT nome,
-        ROUND(CAST(SUM(ST_Area(ST_Intersection(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ))) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as percentual
-      FROM geologia_litologia.litoestratigrafia_br
+      SELECT
+        nm_unidade as nome,
+        tipo_pto as tipo,
+        COUNT(*) as num_pontos,
+        MIN(NULLIF(TRIM(ds_afl1), '')) as descricao
+      FROM geologia_litologia.geol_ponto
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
-      GROUP BY nome ORDER BY percentual DESC
+      GROUP BY nm_unidade, tipo_pto
+      ORDER BY num_pontos DESC
     `, [geojsonStr]);
     analyses['9.5_geologia'].data = geologiaResult.rows;
 
@@ -758,25 +759,29 @@ app.post('/api/analises', async (req, res) => {
     };
 
     let geolPontoResult = await safeQuery(`
-      SELECT id, tipo, descricao FROM geologia_litologia.geol_ponto
+      SELECT id, nm_unidade as nome, tipo_pto as tipo, ds_afl1 as descricao, fonte
+      FROM geologia_litologia.geol_ponto
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.pontos = geolPontoResult.rows;
 
     let geolLinhaDbraResult = await safeQuery(`
-      SELECT id, tipo, orientacao FROM geologia_litologia.geol_linha_dobra
+      SELECT id, classif as tipo, forma, compr as comprimento_m
+      FROM geologia_litologia.geol_linha_dobra
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_dobra = geolLinhaDbraResult.rows;
 
     let geolLinhaFalhaResult = await safeQuery(`
-      SELECT id, tipo, comprimento_m FROM geologia_litologia.geol_linha_falha
+      SELECT id, classif as tipo, forma, estm_merg as mergulho, sentido, compr as comprimento_m
+      FROM geologia_litologia.geol_linha_falha
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_falha = geolLinhaFalhaResult.rows;
 
     let geolLinhaFraturaResult = await safeQuery(`
-      SELECT id, tipo, comprimento_m FROM geologia_litologia.geol_linha_fratura
+      SELECT id, classif as tipo, forma, compr as comprimento_m
+      FROM geologia_litologia.geol_linha_fratura
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_fratura = geolLinhaFraturaResult.rows;
