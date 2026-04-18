@@ -430,16 +430,19 @@ app.post('/api/analises', async (req, res) => {
       let serventiaResult = await safeQuery(`
         SELECT id, cartorio, codigo_cns as cns, comarca
         FROM serventias.serventias_brasil
-        WHERE (comarca ILIKE $1 OR municipio ILIKE $1) AND UPPER(uf) = UPPER($2)
+        WHERE comarca ILIKE $1 AND UPPER(uf) = UPPER($2)
         LIMIT 10
       `, [municipio.municipio, municipio.uf]);
       analyses['9.2_registral'].serventias = serventiaResult.rows;
     }
 
-    // 9.3 Solo (Pedologia with percentages)
+    // 9.3 Solo (Pedologia with percentages + description fields)
     analyses['9.3_solo'] = { nome: 'Solo', data: [] };
     let soloResult = await safeQuery(`
-      SELECT nom_unidad as nome,
+      SELECT
+        nom_unidad as codigo,
+        legenda as nome,
+        ordem, subordem, textura, relevo, componente,
         ROUND(CAST(SUM(ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
@@ -449,7 +452,8 @@ app.post('/api/analises', async (req, res) => {
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
-      GROUP BY nom_unidad ORDER BY percentual DESC
+      GROUP BY nom_unidad, legenda, ordem, subordem, textura, relevo, componente
+      ORDER BY percentual DESC
     `, [geojsonStr]);
     analyses['9.3_solo'].data = soloResult.rows;
 
@@ -569,8 +573,8 @@ app.post('/api/analises', async (req, res) => {
         "NOME_UC1" as nome,
         "CATEGORI3" as categoria,
         "GRUPO4" as grupo,
-        "ESFERA6" as esfera,
-        "ANO_CRIA7" as ano_criacao,
+        "ESFERA5" as esfera,
+        "ANO_CRIA6" as ano_criacao,
         ROUND(CAST(ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
