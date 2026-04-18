@@ -82,7 +82,7 @@ async function getUFFromPoint(lat, lng) {
   try {
     // Use ST_SetSRID + ST_MakePoint (avoids EWKT parsing issues with ST_GeomFromText)
     const result = await pool.query(`
-      SELECT LOWER(sigla_uf) as uf_lower
+      SELECT LOWER("SIGLA_UF") as uf_lower
       FROM municipios.municipios_2024
       WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), ${SRID}))
       LIMIT 1
@@ -115,7 +115,7 @@ async function resolveUF(lat, lng) {
 async function getUFFromGeoJSON(geojsonStr) {
   try {
     const result = await pool.query(`
-      SELECT LOWER(m.sigla_uf) as uf_lower
+      SELECT LOWER(m."SIGLA_UF") as uf_lower
       FROM municipios.municipios_2024 m
       WHERE ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       LIMIT 1
@@ -331,8 +331,8 @@ app.post('/api/analises', async (req, res) => {
     // Get centroid and municipality info
     let municResult = await safeQuery(`
       SELECT
-        m.nm_mun as municipio,
-        m.sigla_uf as uf,
+        m."NM_MUN" as municipio,
+        m."SIGLA_UF" as uf,
         ST_AsGeoJSON(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as centroid,
         ROUND(CAST(ST_Area(ST_Transform(ST_Envelope(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)), 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM municipios.municipios_2024 m
@@ -496,10 +496,10 @@ app.post('/api/analises', async (req, res) => {
 
     let anmResult = await safeQuery(`
       SELECT
-        numero_processo,
-        tipo_processo,
-        substancia,
-        situacao
+        "PROCESSO" as numero_processo,
+        "DSProcesso" as tipo_processo,
+        "SUBS" as substancia,
+        "FASE" as situacao
       FROM ${anmProcessoTable}
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -512,8 +512,8 @@ app.post('/api/analises', async (req, res) => {
     let ocorrenciaResult = await safeQuery(`
       SELECT
         id,
-        nome,
-        substancia
+        "NOME" as nome,
+        "SUBS" as substancia
       FROM ${anmOcorrenciasTable}
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -542,7 +542,7 @@ app.post('/api/analises', async (req, res) => {
     // 9.8 Terras Indígenas
     analyses['9.8_terras_indigenas'] = { nome: 'Terras Indígenas', data: [] };
     let tisResult = await safeQuery(`
-      SELECT id, nome, etnia,
+      SELECT id, terrai_nom as nome, etnia_nome as etnia,
         ROUND(CAST(ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
@@ -591,11 +591,12 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null };
     let altitudeResult = await safeQuery(`
       SELECT
-        MIN((ST_PixelAsPoints(rast)).val) as min_alt,
-        MAX((ST_PixelAsPoints(rast)).val) as max_alt,
-        ROUND(CAST(AVG((ST_PixelAsPoints(rast)).val) AS numeric), 1) as avg_alt
-      FROM altitude_br.altitude_raster
-      WHERE ST_Intersects(rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+        MIN(v.val) as min_alt,
+        MAX(v.val) as max_alt,
+        ROUND(CAST(AVG(v.val) AS numeric), 1) as avg_alt
+      FROM altitude_br.altitude_raster r,
+           LATERAL ST_PixelAsPoints(r.rast) v
+      WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     if (altitudeResult.rows[0]) {
       analyses['9.11_altitude'].min_m = altitudeResult.rows[0].min_alt;
@@ -604,9 +605,10 @@ app.post('/api/analises', async (req, res) => {
     }
     if (municipio.centroid) {
       let centroidAltResult = await safeQuery(`
-        SELECT (ST_PixelAsPoints(rast)).val as altitude
-        FROM altitude_br.altitude_raster
-        WHERE ST_Contains(rast::geometry, ST_GeomFromGeoJSON($1))
+        SELECT v.val as altitude
+        FROM altitude_br.altitude_raster r,
+             LATERAL ST_PixelAsPoints(r.rast) v
+        WHERE ST_Contains(r.rast::geometry, ST_GeomFromGeoJSON($1))
         LIMIT 1
       `, [municipio.centroid]);
       if (centroidAltResult.rows[0]) {
@@ -617,9 +619,10 @@ app.post('/api/analises', async (req, res) => {
     // 9.12 Carbono
     analyses['9.12_carbono'] = { nome: 'Carbono', total_toneladas: null };
     let carbonoResult = await safeQuery(`
-      SELECT ROUND(CAST(SUM((ST_PixelAsPoints(rast)).val) / 1000 AS numeric), 2) as total_toneladas
-      FROM carbono_solo.carbono_2024
-      WHERE ST_Intersects(rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      SELECT ROUND(CAST(SUM(v.val) / 1000 AS numeric), 2) as total_toneladas
+      FROM carbono_solo.carbono_2024 r,
+           LATERAL ST_PixelAsPoints(r.rast) v
+      WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     if (carbonoResult.rows[0]) {
       analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
@@ -637,7 +640,7 @@ app.post('/api/analises', async (req, res) => {
     let carAreaResult = await safeQuery(`
       SELECT
         gid as id,
-        numero_imovel,
+        cod_imovel as numero_imovel,
         ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM ${carAreaTable}
       WHERE ST_Intersects(
@@ -847,7 +850,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
     // Static (non-partitioned) layers
     const staticLayerConfig = {
       bioma:    { table: 'bioma.bioma_250',                    idCol: 'id', labelCol: '"Bioma"' },
-      tis:      { table: 'terra_indigena.tis_poligonais',      idCol: 'id', labelCol: 'nome' },
+      tis:      { table: 'terra_indigena.tis_poligonais',      idCol: 'id', labelCol: 'terrai_nom' },
       ucs:      { table: 'unidade_conservacao.unidade_conserv', idCol: 'id', labelCol: '"NOME_UC1"' },
       embargos: { table: 'embargos.embargos_ibama',            idCol: 'id', labelCol: 'num_auto_i' },
     };
