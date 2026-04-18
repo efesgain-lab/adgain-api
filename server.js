@@ -428,9 +428,9 @@ app.post('/api/analises', async (req, res) => {
 
     if (municipio.municipio !== 'Desconhecido') {
       let serventiaResult = await safeQuery(`
-        SELECT id, cartorio as nome, codigo_cns as cartorio_numero
+        SELECT id, cartorio, codigo_cns as cns, comarca
         FROM serventias.serventias_brasil
-        WHERE comarca = $1 AND uf = $2
+        WHERE (comarca ILIKE $1 OR municipio ILIKE $1) AND UPPER(uf) = UPPER($2)
         LIMIT 10
       `, [municipio.municipio, municipio.uf]);
       analyses['9.2_registral'].serventias = serventiaResult.rows;
@@ -454,19 +454,26 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.3_solo'].data = soloResult.rows;
 
     // 9.4 Bioma (with percentages)
+    // Use CTE with ST_Union to avoid double-counting when multiple polygons share the same bioma name
     analyses['9.4_bioma'] = { nome: 'Bioma', data: [] };
     let biomaResult = await safeQuery(`
-      SELECT "Bioma" as nome,
-        ROUND(CAST(SUM(ST_Area(ST_Intersection(
+      WITH bioma_union AS (
+        SELECT "Bioma" as nome,
+               ST_Union(CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END) as geom
+        FROM bioma.bioma_250
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ))) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as percentual
-      FROM bioma.bioma_250
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        )
+        GROUP BY "Bioma"
       )
-      GROUP BY "Bioma" ORDER BY percentual DESC
+      SELECT nome,
+        ROUND(CAST(
+          ST_Area(ST_Intersection(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) /
+          ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100
+        AS numeric), 2) as percentual
+      FROM bioma_union
+      ORDER BY percentual DESC
     `, [geojsonStr]);
     analyses['9.4_bioma'].data = biomaResult.rows;
 
@@ -558,11 +565,16 @@ app.post('/api/analises', async (req, res) => {
     // 9.9 Unidades de Conservação
     analyses['9.9_ucs'] = { nome: 'Unidades de Conservação', data: [] };
     let ucsResult = await safeQuery(`
-      SELECT id, "NOME_UC1" as nome, "CATEGORI3" as tipo_uc, "GRUPO4" as categoria,
+      SELECT id,
+        "NOME_UC1" as nome,
+        "CATEGORI3" as categoria,
+        "GRUPO4" as grupo,
+        "ESFERA6" as esfera,
+        "ANO_CRIA7" as ano_criacao,
         ROUND(CAST(ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        )) / 10000 AS numeric), 2) as area_hectares
+        )) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as sobreposicao_percentual
       FROM unidade_conservacao.unidade_conserv
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -702,6 +714,33 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.13_car'].vegetacao_nativa_hectares = vegNativaResult.rows[0].area_hectares;
     }
 
+    // 9.13b Aquíferos
+    analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', data: [] };
+    // Try hidrogeologia schema first, then sgb, then hidrogeo
+    let aquiferosResult = await safeQuery(`
+      SELECT tipo_aquife as tipo, sistema_aqu as sistema, dominio as dominio,
+             descricao, area_km2 as area_sistema_km2
+      FROM hidrogeologia.sistemas_aquiferos
+      WHERE ST_Intersects(
+        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+      )
+      LIMIT 5
+    `, [geojsonStr]);
+    if (aquiferosResult.rows.length === 0) {
+      aquiferosResult = await safeQuery(`
+        SELECT tipo, sistema, dominio, descricao,
+               ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 1000000 AS numeric), 3) as area_sistema_km2
+        FROM hidrogeologia.aquiferos
+        WHERE ST_Intersects(
+          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        )
+        LIMIT 5
+      `, [geojsonStr]);
+    }
+    analyses['9.13b_aquiferos'].data = aquiferosResult.rows;
+
     // 9.14 Análises Adicionais (Geologia + Tectônica)
     analyses['9.14_analises_adicionais'] = {
       nome: 'Análises Adicionais',
@@ -786,7 +825,7 @@ app.post('/api/analises', async (req, res) => {
         reserva_proposta_ha:      0,
         veg_nativa_proposta_ha:   0,
       },
-      aquiferos: [],
+      aquiferos: analyses['9.13b_aquiferos'].data,
       analises_adicionais: analyses['9.14_analises_adicionais'],
       municipio:  { NM_MUN: municipio.municipio, SIGLA_UF: municipio.uf, CD_MUN: '' },
       municipios: [{ nm_mun: municipio.municipio, sigla_uf: municipio.uf }],
