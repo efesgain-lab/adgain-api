@@ -874,7 +874,8 @@ app.post('/api/analises', async (req, res) => {
 app.get('/api/camadas/:camada', async (req, res) => {
   try {
     const { camada } = req.params;
-    const { bbox, lat, lng, raio, radius = 0.5 } = req.query;
+    const { bbox, lat, lng, raio, zoom: zoomStr } = req.query;
+    const zoom = parseFloat(zoomStr) || 10;
 
     let minLng, minLat, maxLng, maxLat;
 
@@ -896,6 +897,11 @@ app.get('/api/camadas/:camada', async (req, res) => {
 
     const bboxWkt = `SRID=${SRID};POLYGON((${minLng} ${minLat}, ${maxLng} ${minLat}, ${maxLng} ${maxLat}, ${minLng} ${maxLat}, ${minLng} ${minLat}))`;
     const geomExpr = `CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END`;
+
+    // Zoom-based tuning — keeps original ST_Intersects/bboxWkt intact (safe for SRID=0 tables)
+    const simplifyTol   = zoom >= 14 ? 0.00005 : zoom >= 12 ? 0.0003 : zoom >= 10 ? 0.001 : zoom >= 8 ? 0.004 : 0.01;
+    const limitPerState = zoom >= 12 ? 150 : zoom >= 10 ? 80 : zoom >= 8 ? 40 : 20;
+    const limitTotal    = zoom >= 12 ? 400 : zoom >= 10 ? 200 : zoom >= 8 ? 100 : 60;
 
     // State-partitioned layers: query ALL states that intersect the bbox (UNION ALL)
     const stateLayerConfig = {
@@ -934,7 +940,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
       const perStateResults = await Promise.all(
         ufs.map(u => safeQuery(
           `SELECT ${idCol}, ${labelCol} as label,
-             ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry,
+             ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
              ST_Distance(
                ST_Centroid(${geomExpr}),
                ST_SetSRID(ST_MakePoint($2, $3), ${SRID})
@@ -943,16 +949,16 @@ app.get('/api/camadas/:camada', async (req, res) => {
            WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
              ${extraFilter}
            ORDER BY dist_center ASC
-           LIMIT 200`,
+           LIMIT ${limitPerState}`,
           [bboxWkt, centerLng, centerLat]
         ))
       );
 
-      // Merge todos os estados, ordena globalmente do centro para fora, limita 500
+      // Merge todos os estados, ordena globalmente do centro para fora
       const allRows = perStateResults
         .flatMap(r => r.rows)
         .sort((a, b) => a.dist_center - b.dist_center)
-        .slice(0, 500);
+        .slice(0, limitTotal);
       const features = allRows
         .filter(row => row.geometry != null)
         .map(row => ({
@@ -1091,3 +1097,4 @@ app.listen(port, () => {
   console.log(`AdGain API server running on port ${port}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
