@@ -481,10 +481,10 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.4_bioma'].data = biomaResult.rows;
 
-    // 9.5 Geologia — usa geol_ponto (retorna cada ponto que sobrepõe a parcela)
-    // litoestratigrafia_br não tem permissão de acesso no banco
+    // 9.5 Geologia — usa geol_ponto (litoestratigrafia_br sem permissão de acesso)
+    // Tenta: 1) pontos dentro da parcela, 2) pontos próximos (buffer 0.5°), 3) mais próximos (buffer 1°)
     analyses['9.5_geologia'] = { nome: 'Geologia', data: [] };
-    let geologiaResult = await safeQuery(`
+    const geolPontoBase = `
       SELECT
         cd_fcim as cod_afloramento,
         nm_unidade as nome,
@@ -492,12 +492,36 @@ app.post('/api/analises', async (req, res) => {
         fonte,
         NULLIF(TRIM(ds_afl1), '') as descricao
       FROM geologia_litologia.geol_ponto
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
+    `;
+    const parcGeom = `ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)`;
+    const geomCol = `CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END`;
+
+    let geologiaResult = await safeQuery(`
+      ${geolPontoBase}
+      WHERE ST_Intersects(${geomCol}, ${parcGeom})
       ORDER BY nm_unidade
     `, [geojsonStr]);
+
+    if (geologiaResult.rows.length === 0) {
+      // Fallback: pontos mais próximos dentro de 0.5 grau (~55 km)
+      geologiaResult = await safeQuery(`
+        ${geolPontoBase}
+        WHERE ST_DWithin(${geomCol}, ${parcGeom}, 0.5)
+        ORDER BY ST_Distance(${geomCol}, ST_Centroid(${parcGeom}))
+        LIMIT 10
+      `, [geojsonStr]);
+    }
+
+    if (geologiaResult.rows.length === 0) {
+      // Fallback 2: pontos mais próximos dentro de 1 grau (~110 km)
+      geologiaResult = await safeQuery(`
+        ${geolPontoBase}
+        WHERE ST_DWithin(${geomCol}, ${parcGeom}, 1.0)
+        ORDER BY ST_Distance(${geomCol}, ST_Centroid(${parcGeom}))
+        LIMIT 5
+      `, [geojsonStr]);
+    }
+
     analyses['9.5_geologia'].data = geologiaResult.rows;
 
     // 9.6 Mineração (ANM processes + ocorrências)
