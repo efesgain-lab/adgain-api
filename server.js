@@ -481,47 +481,34 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.4_bioma'].data = biomaResult.rows;
 
-    // 9.5 Geologia — usa geol_ponto (litoestratigrafia_br sem permissão de acesso)
-    // Tenta: 1) pontos dentro da parcela, 2) pontos próximos (buffer 0.5°), 3) mais próximos (buffer 1°)
+    // 9.5 Geologia — litoestratigafia_br (polígonos completos do Brasil, CPRM/SGB)
     analyses['9.5_geologia'] = { nome: 'Geologia', data: [] };
-    const geolPontoBase = `
-      SELECT
-        cd_fcim as cod_afloramento,
-        nm_unidade as nome,
-        tipo_pto as tipo,
-        fonte,
-        NULLIF(TRIM(ds_afl1), '') as descricao
-      FROM geologia_litologia.geol_ponto
-    `;
-    const parcGeom = `ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)`;
-    const geomCol = `CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END`;
-
     let geologiaResult = await safeQuery(`
-      ${geolPontoBase}
-      WHERE ST_Intersects(${geomCol}, ${parcGeom})
-      ORDER BY nm_unidade
+      SELECT
+        "NOME"               as nome,
+        "SIGLA"              as sigla,
+        "LITOTIPOS"          as litotipos,
+        "ERA_MIN"            as era_min,
+        "ERA_MAX"            as era_max,
+        "EON_MIN"            as eon_min,
+        "SISTEMA_MIN"        as sistema_min,
+        "AMBIENTE_TECTONICO" as ambiente_tectonico,
+        "HIERARQUIA"         as hierarquia,
+        "LEGENDA"            as legenda,
+        ROUND(CAST(
+          ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          )) /
+          ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100
+        AS numeric), 2) as percentual
+      FROM geologia_litologia.litoestratigafia_br
+      WHERE ST_Intersects(
+        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+      )
+      ORDER BY percentual DESC
     `, [geojsonStr]);
-
-    if (geologiaResult.rows.length === 0) {
-      // Fallback: pontos mais próximos dentro de 0.5 grau (~55 km)
-      geologiaResult = await safeQuery(`
-        ${geolPontoBase}
-        WHERE ST_DWithin(${geomCol}, ${parcGeom}, 0.5)
-        ORDER BY ST_Distance(${geomCol}, ST_Centroid(${parcGeom}))
-        LIMIT 10
-      `, [geojsonStr]);
-    }
-
-    if (geologiaResult.rows.length === 0) {
-      // Fallback 2: pontos mais próximos dentro de 1 grau (~110 km)
-      geologiaResult = await safeQuery(`
-        ${geolPontoBase}
-        WHERE ST_DWithin(${geomCol}, ${parcGeom}, 1.0)
-        ORDER BY ST_Distance(${geomCol}, ST_Centroid(${parcGeom}))
-        LIMIT 5
-      `, [geojsonStr]);
-    }
-
     analyses['9.5_geologia'].data = geologiaResult.rows;
 
     // 9.6 Mineração (ANM processes + ocorrências)
