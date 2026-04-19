@@ -319,7 +319,8 @@ app.post('/api/buscar-feicao', async (req, res) => {
  */
 app.post('/api/analises', async (req, res) => {
   try {
-    const { geojson } = req.body;
+    // origem: 'sigef' | 'snci' | 'car' — indica a camada de origem da parcela selecionada
+    const { geojson, origem } = req.body;
 
     if (!geojson) {
       return res.status(400).json({ error: 'geojson required in body' });
@@ -327,6 +328,7 @@ app.post('/api/analises', async (req, res) => {
 
     const feature = parseGeoJSONFeature(geojson);
     const geojsonStr = JSON.stringify(feature);
+    const origemParcel = (origem || '').toLowerCase(); // 'sigef' | 'snci' | 'car'
 
     // Get centroid and municipality info
     let municResult = await safeQuery(`
@@ -385,49 +387,107 @@ app.post('/api/analises', async (req, res) => {
       snci: [],
     };
 
-    let fundiariaResult = await safeQuery(`
-      SELECT
-        gid as id,
-        parcela_co,
-        nome_area,
-        situacao_i,
-        TO_CHAR(data_aprov, 'DD/MM/YYYY') as data_aprov,
-        codigo_imo,
-        registro_m,
-        TO_CHAR(registro_d, 'DD/MM/YYYY') as registro_d,
-        ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
+    // CTE reutilizável: gera 4 pontos geodistribuídos (grade 2×2 da bbox) dentro da parcela.
+    // Usa ST_PointOnSurface como fallback para quadrantes fora do polígono (formas irregulares).
+    const samplePtsCTE = `
+      WITH parcel_geom AS (
+        SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AS g
+      ),
+      sample_pts AS (
+        SELECT DISTINCT unnest(ARRAY[
+          ST_PointOnSurface(g),
+          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID}))
+               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID})
+               ELSE ST_PointOnSurface(g) END,
+          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID}))
+               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID})
+               ELSE ST_PointOnSurface(g) END,
+          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID}))
+               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID})
+               ELSE ST_PointOnSurface(g) END,
+          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID}))
+               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID})
+               ELSE ST_PointOnSurface(g) END
+        ]) AS pt
+        FROM parcel_geom
+      )
+    `;
+
+    // Se origem é CAR → usa 4 pontos para encontrar SIGEF/SNCI correspondentes
+    // Se origem é SIGEF/SNCI/mixed → usa intersecção direta (parcela selecionada é a própria)
+    const isCARSelected = origemParcel === 'car';
+
+    if (isCARSelected) {
+      // Parcela CAR selecionada → busca SIGEF via 4 pontos
+      let fundiariaResult = await safeQuery(`
+        ${samplePtsCTE}
+        SELECT DISTINCT ON (t.gid) t.gid as id,
+          t.parcela_co, t.nome_area, t.situacao_i,
+          TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
+          t.codigo_imo, t.registro_m,
+          TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${sigefTable} t, sample_pts sp
+        WHERE ST_Contains(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          sp.pt
+        )
+      `, [geojsonStr]);
+      analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
+
+      // Parcela CAR selecionada → busca SNCI via 4 pontos
+      let snciResult = await safeQuery(`
+        ${samplePtsCTE}
+        SELECT DISTINCT ON (t.gid) t.gid as id,
+          t.cod_imovel, t.nome_imove, t.num_certif,
+          TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
+          t.qtd_area_p,
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${snciTable} t, sample_pts sp
+        WHERE ST_Contains(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          sp.pt
+        )
+      `, [geojsonStr]);
+      analyses['9.1_fundiaria'].snci = snciResult.rows;
+
+    } else {
+      // Parcela SIGEF/SNCI selecionada → mostra intersecção direta da própria camada
+      let fundiariaResult = await safeQuery(`
+        SELECT
+          gid as id, parcela_co, nome_area, situacao_i,
+          TO_CHAR(data_aprov, 'DD/MM/YYYY') as data_aprov,
+          codigo_imo, registro_m,
+          TO_CHAR(registro_d, 'DD/MM/YYYY') as registro_d,
+          ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          ), 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${sigefTable}
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ), 32721)) / 10000 AS numeric), 2) as area_hectares
-      FROM ${sigefTable}
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
+        )
+      `, [geojsonStr]);
+      analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
-    analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
-
-    let snciResult = await safeQuery(`
-      SELECT
-        gid as id,
-        cod_imovel,
-        nome_imove,
-        num_certif,
-        TO_CHAR(data_certi, 'DD/MM/YYYY') as data_certi,
-        qtd_area_p,
-        ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
+      let snciResult = await safeQuery(`
+        SELECT
+          gid as id, cod_imovel, nome_imove, num_certif,
+          TO_CHAR(data_certi, 'DD/MM/YYYY') as data_certi,
+          qtd_area_p,
+          ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          ), 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${snciTable}
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ), 32721)) / 10000 AS numeric), 2) as area_hectares
-      FROM ${snciTable}
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
-
-    analyses['9.1_fundiaria'].snci = snciResult.rows;
+        )
+      `, [geojsonStr]);
+      analyses['9.1_fundiaria'].snci = snciResult.rows;
+    }
 
     // 9.2 Registral (Serventias by municipality)
     analyses['9.2_registral'] = {
@@ -692,23 +752,33 @@ app.post('/api/analises', async (req, res) => {
       vegetacao_nativa_hectares: 0,
     };
 
-    let carAreaResult = await safeQuery(`
-      SELECT
-        gid as id,
-        cod_imovel,
-        num_area,
-        ind_tipo,
-        ind_status,
-        des_condic,
-        dat_criaca,
-        dat_atuali,
-        ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-      FROM ${carAreaTable}
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
+    let carAreaResult;
+    if (isCARSelected) {
+      // Parcela CAR selecionada → intersecção direta (a própria camada selecionada)
+      carAreaResult = await safeQuery(`
+        SELECT
+          gid as id, cod_imovel, num_area, ind_tipo, ind_status, des_condic, dat_criaca, dat_atuali,
+          ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${carAreaTable}
+        WHERE ST_Intersects(
+          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        )
+      `, [geojsonStr]);
+    } else {
+      // Parcela SIGEF/SNCI selecionada → usa 4 pontos geodistribuídos para encontrar CAR correspondente
+      carAreaResult = await safeQuery(`
+        ${samplePtsCTE}
+        SELECT DISTINCT ON (t.gid) t.gid as id,
+          t.cod_imovel, t.num_area, t.ind_tipo, t.ind_status, t.des_condic, t.dat_criaca, t.dat_atuali,
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${carAreaTable} t, sample_pts sp
+        WHERE ST_Contains(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          sp.pt
+        )
+      `, [geojsonStr]);
+    }
 
     analyses['9.13_car'].area_imovel = carAreaResult.rows;
 
