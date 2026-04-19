@@ -1025,8 +1025,34 @@ app.get('/api/camadas/:camada', async (req, res) => {
 
       // Query each state table safely (tables without data return empty array)
       const extraFilter = cfg.filter ? `AND ${cfg.filter}` : '';
-      const perStateResults = await Promise.all(
-        ufs.map(u => safeQuery(
+
+      // Para camada 'sigef': consulta SIGEF + SNCI juntas (ambas compõem a camada fundiária)
+      let queryTargets;
+      if (camada === 'sigef') {
+        const sigefCfg = stateLayerConfig['sigef'];
+        const snciCfg  = stateLayerConfig['snci'];
+        queryTargets = ufs.flatMap(u => [
+          safeQuery(
+            `SELECT ${sigefCfg.idCol}, ${sigefCfg.labelCol} as label, 'sigef' as source,
+               ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
+               ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
+             FROM ${sigefCfg.schema}.${sigefCfg.prefix}_${u}
+             WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             ORDER BY dist_center ASC LIMIT ${limitPerState}`,
+            [bboxWkt, centerLng, centerLat]
+          ),
+          safeQuery(
+            `SELECT ${snciCfg.idCol}, ${snciCfg.labelCol} as label, 'snci' as source,
+               ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
+               ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
+             FROM ${snciCfg.schema}.${snciCfg.prefix}_${u}
+             WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             ORDER BY dist_center ASC LIMIT ${limitPerState}`,
+            [bboxWkt, centerLng, centerLat]
+          ),
+        ]);
+      } else {
+        queryTargets = ufs.map(u => safeQuery(
           `SELECT ${idCol}, ${labelCol} as label,
              ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
              ST_Distance(
@@ -1039,8 +1065,10 @@ app.get('/api/camadas/:camada', async (req, res) => {
            ORDER BY dist_center ASC
            LIMIT ${limitPerState}`,
           [bboxWkt, centerLng, centerLat]
-        ))
-      );
+        ));
+      }
+
+      const perStateResults = await Promise.all(queryTargets);
 
       // Merge todos os estados, ordena globalmente do centro para fora
       const allRows = perStateResults
@@ -1051,8 +1079,8 @@ app.get('/api/camadas/:camada', async (req, res) => {
         .filter(row => row.geometry != null)
         .map(row => ({
           type: 'Feature',
-          id: row[idCol],
-          properties: { label: row.label },
+          id: `${row.source || camada}_${row[idCol]}`,
+          properties: { label: row.label, source: row.source || camada },
           geometry: JSON.parse(row.geometry),
         }));
 
