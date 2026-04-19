@@ -388,7 +388,13 @@ app.post('/api/analises', async (req, res) => {
     let fundiariaResult = await safeQuery(`
       SELECT
         gid as id,
-        parcela_co as numero,
+        parcela_co,
+        nome_area,
+        situacao_i,
+        TO_CHAR(data_aprov, 'DD/MM/YYYY') as data_aprov,
+        codigo_imo,
+        registro_m,
+        TO_CHAR(registro_d, 'DD/MM/YYYY') as registro_d,
         ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
@@ -405,7 +411,11 @@ app.post('/api/analises', async (req, res) => {
     let snciResult = await safeQuery(`
       SELECT
         gid as id,
-        num_proces as numero,
+        cod_imovel,
+        nome_imove,
+        num_certif,
+        TO_CHAR(data_certi, 'DD/MM/YYYY') as data_certi,
+        qtd_area_p,
         ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
@@ -685,7 +695,13 @@ app.post('/api/analises', async (req, res) => {
     let carAreaResult = await safeQuery(`
       SELECT
         gid as id,
-        cod_imovel as numero_imovel,
+        cod_imovel,
+        num_area,
+        ind_tipo,
+        ind_status,
+        des_condic,
+        dat_criaca,
+        dat_atuali,
         ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM ${carAreaTable}
       WHERE ST_Intersects(
