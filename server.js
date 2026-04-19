@@ -640,8 +640,9 @@ app.post('/api/analises', async (req, res) => {
         MAX(v.val) as max_alt,
         ROUND(CAST(AVG(v.val) AS numeric), 1) as avg_alt
       FROM altitude_br.altitude_raster r,
-           LATERAL ST_PixelAsPoints(r.rast) v
+           LATERAL ST_PixelAsPoints(ST_Clip(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) v
       WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+        AND v.val IS NOT NULL
     `, [geojsonStr]);
     if (altitudeResult.rows[0]) {
       analyses['9.11_altitude'].min_m = altitudeResult.rows[0].min_alt;
@@ -650,10 +651,9 @@ app.post('/api/analises', async (req, res) => {
     }
     if (municipio.centroid) {
       let centroidAltResult = await safeQuery(`
-        SELECT v.val as altitude
-        FROM altitude_br.altitude_raster r,
-             LATERAL ST_PixelAsPoints(r.rast) v
-        WHERE ST_Contains(r.rast::geometry, ST_GeomFromGeoJSON($1))
+        SELECT ST_Value(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1), 4674)) as altitude
+        FROM altitude_br.altitude_raster r
+        WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1), 4674))
         LIMIT 1
       `, [municipio.centroid]);
       if (centroidAltResult.rows[0]) {
