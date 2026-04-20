@@ -377,6 +377,7 @@ app.post('/api/analises', async (req, res) => {
     const carAppsTable = `car.apps_${uf}`;
     const carReservaTable = `car.reserva_legal_${uf}`;
     const carVegNativaTable = `car.vegetacao_nativa_${uf}`;
+    const carAreaConsolidadaTable = `car.area_consolidada_${uf}`;
 
     const analyses = {};
 
@@ -750,6 +751,7 @@ app.post('/api/analises', async (req, res) => {
       app_area_hectares: 0,
       reserva_legal_hectares: 0,
       vegetacao_nativa_hectares: 0,
+      area_consolidada_hectares: 0,
     };
 
     let carAreaResult;
@@ -833,6 +835,18 @@ app.post('/api/analises', async (req, res) => {
 
       if (vegNativaResult.rows[0] && vegNativaResult.rows[0].area_ha) {
         analyses['9.13_car'].vegetacao_nativa_hectares = parseFloat(vegNativaResult.rows[0].area_ha);
+      }
+
+      let areaConsolidadaResult = await safeQuery(`
+        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
+        FROM ${carAreaConsolidadaTable}
+        WHERE cod_imovel IN (${placeholders})
+      `, codImoveisCar);
+
+      console.log('[DEBUG] areaConsolidada rows:', JSON.stringify(areaConsolidadaResult.rows));
+
+      if (areaConsolidadaResult.rows[0] && areaConsolidadaResult.rows[0].area_ha) {
+        analyses['9.13_car'].area_consolidada_hectares = parseFloat(areaConsolidadaResult.rows[0].area_ha);
       }
     }
 
@@ -1025,6 +1039,7 @@ app.post('/api/analises', async (req, res) => {
         app_detalhes:             [],
         area_reserva_legal_ha:    analyses['9.13_car'].reserva_legal_hectares,
         area_vegetacao_nativa_ha: analyses['9.13_car'].vegetacao_nativa_hectares,
+        area_consolidada_ha:      analyses['9.13_car'].area_consolidada_hectares,
         reserva_proposta_ha:      0,
         veg_nativa_proposta_ha:   0,
       },
