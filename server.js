@@ -857,13 +857,19 @@ app.post('/api/analises', async (req, res) => {
         analyses['9.13_car'].vegetacao_nativa_hectares = parseFloat(vegNativaResult.rows[0].area_ha);
       }
 
-      let areaConsolidadaResult = await safeQuery(`
-        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
-        FROM ${carAreaConsolidadaTable}
-        WHERE cod_imovel IN (${placeholders})
-      `, codImoveisCar);
-
-      console.log('[DEBUG] areaConsolidada rows:', JSON.stringify(areaConsolidadaResult.rows));
+      console.log('[DEBUG] areaConsolidadaTable:', carAreaConsolidadaTable, '| codImoveisCar:', JSON.stringify(codImoveisCar));
+      let areaConsolidadaResult;
+      try {
+        areaConsolidadaResult = await pool.query(`
+          SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
+          FROM ${carAreaConsolidadaTable}
+          WHERE cod_imovel IN (${placeholders})
+        `, codImoveisCar);
+        console.log('[DEBUG] areaConsolidada rows:', JSON.stringify(areaConsolidadaResult.rows));
+      } catch (e) {
+        console.error('[DEBUG] areaConsolidada ERRO:', e.message, '| tabela:', carAreaConsolidadaTable);
+        areaConsolidadaResult = { rows: [] };
+      }
 
       if (areaConsolidadaResult.rows[0] && areaConsolidadaResult.rows[0].area_ha) {
         analyses['9.13_car'].area_consolidada_hectares = parseFloat(areaConsolidadaResult.rows[0].area_ha);
