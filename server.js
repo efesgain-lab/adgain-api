@@ -799,38 +799,34 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.13_car'].app_area_hectares = appResult.rows[0].area_hectares;
     }
 
-    let reservaLegalResult = await safeQuery(`
-      SELECT
-        ROUND(CAST(SUM(ST_Area(ST_Intersection(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ))) / 10000 AS numeric), 2) as area_hectares
-      FROM ${carReservaTable}
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
+    // Reserva Legal Proposta e Vegetação Nativa: busca por cod_imovel das parcelas CAR encontradas
+    // usando num_area (valor declarado no CAR), não área calculada por intersecção espacial
+    const codImoveisCar = analyses['9.13_car'].area_imovel
+      .map(r => r.cod_imovel)
+      .filter(Boolean);
 
-    if (reservaLegalResult.rows[0] && reservaLegalResult.rows[0].area_hectares) {
-      analyses['9.13_car'].reserva_legal_hectares = reservaLegalResult.rows[0].area_hectares;
-    }
+    if (codImoveisCar.length > 0) {
+      const placeholders = codImoveisCar.map((_, i) => `$${i + 1}`).join(', ');
 
-    let vegNativaResult = await safeQuery(`
-      SELECT
-        ROUND(CAST(SUM(ST_Area(ST_Intersection(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ))) / 10000 AS numeric), 2) as area_hectares
-      FROM ${carVegNativaTable}
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
+      let reservaLegalResult = await safeQuery(`
+        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
+        FROM ${carReservaTable}
+        WHERE cod_imovel IN (${placeholders})
+      `, codImoveisCar);
 
-    if (vegNativaResult.rows[0] && vegNativaResult.rows[0].area_hectares) {
-      analyses['9.13_car'].vegetacao_nativa_hectares = vegNativaResult.rows[0].area_hectares;
+      if (reservaLegalResult.rows[0] && reservaLegalResult.rows[0].area_ha) {
+        analyses['9.13_car'].reserva_legal_hectares = parseFloat(reservaLegalResult.rows[0].area_ha);
+      }
+
+      let vegNativaResult = await safeQuery(`
+        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
+        FROM ${carVegNativaTable}
+        WHERE cod_imovel IN (${placeholders})
+      `, codImoveisCar);
+
+      if (vegNativaResult.rows[0] && vegNativaResult.rows[0].area_ha) {
+        analyses['9.13_car'].vegetacao_nativa_hectares = parseFloat(vegNativaResult.rows[0].area_ha);
+      }
     }
 
     // 9.13b Aquíferos
