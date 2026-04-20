@@ -453,38 +453,35 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.1_fundiaria'].snci = snciResult.rows;
 
     } else {
-      // Parcela SIGEF/SNCI selecionada → mostra intersecção direta da própria camada
+      // Parcela SIGEF/SNCI selecionada → usa 4 pontos geodistribuídos para retornar
+      // apenas a parcela que contém os pontos internos (evita vizinhos por ST_Intersects)
       let fundiariaResult = await safeQuery(`
-        SELECT
-          gid as id, parcela_co, nome_area, situacao_i,
-          TO_CHAR(data_aprov, 'DD/MM/YYYY') as data_aprov,
-          codigo_imo, registro_m,
-          TO_CHAR(registro_d, 'DD/MM/YYYY') as registro_d,
-          ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
-            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-          ), 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${sigefTable}
-        WHERE ST_Intersects(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        ${samplePtsCTE}
+        SELECT DISTINCT ON (t.gid) t.gid as id,
+          t.parcela_co, t.nome_area, t.situacao_i,
+          TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
+          t.codigo_imo, t.registro_m,
+          TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${sigefTable} t, sample_pts sp
+        WHERE ST_Contains(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          sp.pt
         )
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
       let snciResult = await safeQuery(`
-        SELECT
-          gid as id, cod_imovel, nome_imove, num_certif,
-          TO_CHAR(data_certi, 'DD/MM/YYYY') as data_certi,
-          qtd_area_p,
-          ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(
-            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-          ), 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${snciTable}
-        WHERE ST_Intersects(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        ${samplePtsCTE}
+        SELECT DISTINCT ON (t.gid) t.gid as id,
+          t.cod_imovel, t.nome_imove, t.num_certif,
+          TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
+          t.qtd_area_p,
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+        FROM ${snciTable} t, sample_pts sp
+        WHERE ST_Contains(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          sp.pt
         )
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
