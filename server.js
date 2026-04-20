@@ -732,13 +732,28 @@ app.post('/api/analises', async (req, res) => {
       }
     }
 
-    // 9.12 Carbono
+    // 9.12 Carbono do Solo
+    // Raster armazena Mg C/ha (toneladas/ha por pixel).
+    // Total (Mg C) = SUM(val × pixel_area_ha)
+    // pixel_area_ha = |ScaleX × ScaleY| em graus² × cos(lat) × 111320² / 10000
     analyses['9.12_carbono'] = { nome: 'Carbono', total_toneladas: null };
     let carbonoResult = await safeQuery(`
-      SELECT ROUND(CAST(SUM(v.val) / 1000 AS numeric), 2) as total_toneladas
-      FROM carbono_solo.carbono_2024 r,
-           LATERAL ST_PixelAsPoints(r.rast) v
-      WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WITH parcel_geom AS (
+        SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
+      ),
+      clipped AS (
+        SELECT
+          ST_Clip(r.rast, pg.g, true) AS rast_clip,
+          ABS(ST_ScaleX(r.rast)) * ABS(ST_ScaleY(r.rast))
+            * COS(RADIANS(ST_Y(ST_Centroid(ST_Envelope(r.rast)))))
+            * 111320.0 * 111320.0 / 10000.0 AS pixel_area_ha
+        FROM carbono_solo.carbono_2024 r, parcel_geom pg
+        WHERE ST_Intersects(r.rast, pg.g)
+      )
+      SELECT ROUND(CAST(SUM(v.val * c.pixel_area_ha) AS numeric), 2) AS total_toneladas
+      FROM clipped c,
+           LATERAL ST_PixelAsPoints(c.rast_clip) v
+      WHERE v.val IS NOT NULL AND v.val > 0
     `, [geojsonStr]);
     if (carbonoResult.rows[0]) {
       analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
