@@ -419,7 +419,7 @@ app.post('/api/analises', async (req, res) => {
     const isCARSelected = origemParcel === 'car';
 
     if (isCARSelected) {
-      // Parcela CAR selecionada → busca SIGEF via 4 pontos
+      // Parcela CAR selecionada → busca SIGEF via 4 pontos + filtro de sobreposição real
       let fundiariaResult = await safeQuery(`
         ${samplePtsCTE}
         SELECT DISTINCT ON (t.gid) t.gid as id,
@@ -433,10 +433,14 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           sp.pt
         )
+        AND ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+        ), 32721)) > 0
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
-      // Parcela CAR selecionada → busca SNCI via 4 pontos
+      // Parcela CAR selecionada → busca SNCI via 4 pontos + filtro de sobreposição real
       let snciResult = await safeQuery(`
         ${samplePtsCTE}
         SELECT DISTINCT ON (t.gid) t.gid as id,
@@ -449,12 +453,15 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           sp.pt
         )
+        AND ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+        ), 32721)) > 0
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
 
     } else {
-      // Parcela SIGEF/SNCI selecionada → usa 4 pontos geodistribuídos para retornar
-      // apenas a parcela que contém os pontos internos (evita vizinhos por ST_Intersects)
+      // Parcela SIGEF/SNCI selecionada → 4 pontos + filtro de sobreposição real
       let fundiariaResult = await safeQuery(`
         ${samplePtsCTE}
         SELECT DISTINCT ON (t.gid) t.gid as id,
@@ -468,6 +475,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           sp.pt
         )
+        AND ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+        ), 32721)) > 0
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
@@ -483,6 +494,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           sp.pt
         )
+        AND ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+        ), 32721)) > 0
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
     }
@@ -765,7 +780,8 @@ app.post('/api/analises', async (req, res) => {
         )
       `, [geojsonStr]);
     } else {
-      // Parcela SIGEF/SNCI selecionada → usa 4 pontos geodistribuídos para encontrar CAR correspondente
+      // Parcela SIGEF/SNCI selecionada → 4 pontos + filtro de sobreposição real
+      // Vizinhos que só confinam têm interseção linear (área = 0) e são excluídos
       carAreaResult = await safeQuery(`
         ${samplePtsCTE}
         SELECT DISTINCT ON (t.gid) t.gid as id,
@@ -776,6 +792,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           sp.pt
         )
+        AND ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+        ), 32721)) > 0
       `, [geojsonStr]);
     }
 
