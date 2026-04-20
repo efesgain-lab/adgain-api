@@ -594,7 +594,7 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.5_geologia'].data = geologiaResult.rows;
 
-    // 9.6 Mineração (ANM processes + ocorrências)
+    // 9.6 Mineração (ANM) — colunas: PROCESSO, FASE, NOME, SUBS
     analyses['9.6_mineracao'] = {
       nome: 'Mineração',
       processes: [],
@@ -602,33 +602,21 @@ app.post('/api/analises', async (req, res) => {
     };
 
     let anmResult = await safeQuery(`
-      SELECT
-        "PROCESSO" as numero_processo,
-        "DSProcesso" as tipo_processo,
-        "SUBS" as substancia,
-        "FASE" as situacao
+      SELECT DISTINCT ON ("PROCESSO")
+        "PROCESSO"  as numero_processo,
+        "FASE"      as fase,
+        "NOME"      as titular,
+        "SUBS"      as substancia
       FROM ${anmProcessoTable}
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
+      ORDER BY "PROCESSO"
     `, [geojsonStr]);
 
     analyses['9.6_mineracao'].processes = anmResult.rows;
-
-    let ocorrenciaResult = await safeQuery(`
-      SELECT
-        id,
-        "NOME" as nome,
-        "SUBS" as substancia
-      FROM ${anmOcorrenciasTable}
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
-
-    analyses['9.6_mineracao'].occurrences = ocorrenciaResult.rows;
+    analyses['9.6_mineracao'].occurrences = [];
 
     // 9.7 Embargos (IBAMA)
     analyses['9.7_embargos'] = {
