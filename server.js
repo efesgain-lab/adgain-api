@@ -461,43 +461,44 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.1_fundiaria'].snci = snciResult.rows;
 
     } else {
-      // Parcela SIGEF/SNCI selecionada → 4 pontos + filtro de sobreposição real
+      // Parcela SIGEF selecionada → retorna a própria parcela (maior sobreposição = ela mesma)
       let fundiariaResult = await safeQuery(`
-        ${samplePtsCTE}
-        SELECT DISTINCT ON (t.gid) t.gid as id,
+        SELECT t.gid as id,
           t.parcela_co, t.nome_area, t.situacao_i,
           TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
           t.codigo_imo, t.registro_m,
           TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${sigefTable} t, sample_pts sp
-        WHERE ST_Contains(
-          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-          sp.pt
-        )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        FROM ${sigefTable} t
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )
+        ORDER BY ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+        ), 32721)) DESC
+        LIMIT 1
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
+      // Parcela SNCI selecionada → retorna a própria parcela (maior sobreposição = ela mesma)
       let snciResult = await safeQuery(`
-        ${samplePtsCTE}
-        SELECT DISTINCT ON (t.gid) t.gid as id,
+        SELECT t.gid as id,
           t.cod_imovel, t.nome_imove, t.num_certif,
           TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${snciTable} t, sample_pts sp
-        WHERE ST_Contains(
-          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-          sp.pt
-        )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        FROM ${snciTable} t
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )
+        ORDER BY ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+        ), 32721)) DESC
+        LIMIT 1
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
     }
@@ -771,7 +772,7 @@ app.post('/api/analises', async (req, res) => {
 
     let carAreaResult;
     if (isCARSelected) {
-      // Parcela CAR selecionada → intersecção direta (a própria camada selecionada)
+      // Parcela CAR selecionada → retorna só a parcela com maior sobreposição (ela mesma)
       carAreaResult = await safeQuery(`
         SELECT
           gid as id, cod_imovel, num_area, ind_tipo, ind_status, des_condic, dat_criaca, dat_atuali,
@@ -781,6 +782,11 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         )
+        ORDER BY ST_Area(ST_Transform(ST_Intersection(
+          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        ), 32721)) DESC
+        LIMIT 1
       `, [geojsonStr]);
     } else {
       // Parcela SIGEF/SNCI selecionada → 4 pontos + filtro de sobreposição real
