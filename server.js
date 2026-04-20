@@ -419,44 +419,44 @@ app.post('/api/analises', async (req, res) => {
     const isCARSelected = origemParcel === 'car';
 
     if (isCARSelected) {
-      // Parcela CAR selecionada → busca SIGEF via 4 pontos + filtro de sobreposição real
+      // Parcela CAR selecionada → todas SIGEF com sobreposição real de área (SIGEF pode ser menor que CAR)
       let fundiariaResult = await safeQuery(`
-        ${samplePtsCTE}
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.parcela_co, t.nome_area, t.situacao_i,
           TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
           t.codigo_imo, t.registro_m,
           TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${sigefTable} t, sample_pts sp
-        WHERE ST_Contains(
+        FROM ${sigefTable} t
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-          sp.pt
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
         AND ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         ), 32721)) > 0
+        ORDER BY t.gid
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
-      // Parcela CAR selecionada → busca SNCI via 4 pontos + filtro de sobreposição real
+      // Parcela CAR selecionada → todas SNCI com sobreposição real de área
       let snciResult = await safeQuery(`
-        ${samplePtsCTE}
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.cod_imovel, t.nome_imove, t.num_certif,
           TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${snciTable} t, sample_pts sp
-        WHERE ST_Contains(
+        FROM ${snciTable} t
+        WHERE ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-          sp.pt
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
         AND ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         ), 32721)) > 0
+        ORDER BY t.gid
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
 
