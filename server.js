@@ -805,6 +805,9 @@ app.post('/api/analises', async (req, res) => {
       .map(r => r.cod_imovel)
       .filter(Boolean);
 
+    console.log('[DEBUG] codImoveisCar:', JSON.stringify(codImoveisCar));
+    console.log('[DEBUG] carReservaTable:', carReservaTable, '| carVegNativaTable:', carVegNativaTable);
+
     if (codImoveisCar.length > 0) {
       const placeholders = codImoveisCar.map((_, i) => `$${i + 1}`).join(', ');
 
@@ -813,6 +816,8 @@ app.post('/api/analises', async (req, res) => {
         FROM ${carReservaTable}
         WHERE cod_imovel IN (${placeholders})
       `, codImoveisCar);
+
+      console.log('[DEBUG] reservaLegal rows:', JSON.stringify(reservaLegalResult.rows));
 
       if (reservaLegalResult.rows[0] && reservaLegalResult.rows[0].area_ha) {
         analyses['9.13_car'].reserva_legal_hectares = parseFloat(reservaLegalResult.rows[0].area_ha);
@@ -823,6 +828,8 @@ app.post('/api/analises', async (req, res) => {
         FROM ${carVegNativaTable}
         WHERE cod_imovel IN (${placeholders})
       `, codImoveisCar);
+
+      console.log('[DEBUG] vegNativa rows:', JSON.stringify(vegNativaResult.rows));
 
       if (vegNativaResult.rows[0] && vegNativaResult.rows[0].area_ha) {
         analyses['9.13_car'].vegetacao_nativa_hectares = parseFloat(vegNativaResult.rows[0].area_ha);
