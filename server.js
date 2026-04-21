@@ -677,19 +677,23 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false };
 
     // Bacias hidrográficas — tenta bacias_nivel_2 a bacias_nivel_6 no schema hidrografia
-    const baciasQuery = (nivel) => `
-      SELECT nome_bacia, curso_prin, princ_aflu, sub_bacias, suprabacia, ${nivel} as nivel
-      FROM hidrografia.bacias_nivel_${nivel}
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-      LIMIT 3
-    `;
     const baciasRows = [];
     for (const nivel of [2, 3, 4, 5, 6]) {
-      const r = await safeQuery(baciasQuery(nivel), [geojsonStr]);
-      if (r.rows.length > 0) baciasRows.push(...r.rows);
+      try {
+        const r = await pool.query(`
+          SELECT nome_bacia, curso_prin, princ_aflu, sub_bacias, suprabacia, ${nivel} as nivel
+          FROM hidrografia.bacias_nivel_${nivel}
+          WHERE ST_Intersects(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          )
+          LIMIT 1
+        `, [geojsonStr]);
+        console.log(`[bacia] nivel=${nivel} rows=${r.rows.length}`);
+        if (r.rows.length > 0) baciasRows.push(...r.rows);
+      } catch (e) {
+        console.error(`[bacia] nivel=${nivel} ERROR: ${e.message}`);
+      }
     }
     analyses['9.10_hidrografia'].bacias = baciasRows;
 
