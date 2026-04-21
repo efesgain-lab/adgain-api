@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 
-const app = express();
+const app = express() 
 const port = process.env.PORT || 3000;
 
 // Middleware
@@ -433,10 +433,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        AND ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY t.gid
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
@@ -453,10 +453,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        AND ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY t.gid
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
@@ -742,6 +742,13 @@ app.post('/api/analises', async (req, res) => {
       }
     }
 
+    // Fallback: se altitude (min/max/media) nao retornou dados, usa ponto_m
+    if (analyses['9.11_altitude'].min_m === null && analyses['9.11_altitude'].ponto_m !== null) {
+      analyses['9.11_altitude'].min_m = analyses['9.11_altitude'].ponto_m;
+      analyses['9.11_altitude'].max_m = analyses['9.11_altitude'].ponto_m;
+      analyses['9.11_altitude'].media_m = analyses['9.11_altitude'].ponto_m;
+    }
+
     // 9.12 Carbono do Solo
     // Raster armazena Mg C/ha (toneladas/ha por pixel).
     // Total (Mg C) = SUM(val × pixel_area_ha)
@@ -810,10 +817,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           sp.pt
         )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        AND ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
           AND ST_Area(ST_Intersection(
             CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
