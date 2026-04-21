@@ -424,9 +424,9 @@ app.post('/api/analises', async (req, res) => {
       let fundiariaResult = await safeQuery(`
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.parcela_co, t.nome_area, t.situacao_i,
-          TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
+          t.data_aprov::text as data_aprov,
           t.codigo_imo, t.registro_m,
-          TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
+          t.registro_d::text as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable} t
         WHERE ST_Intersects(
@@ -445,7 +445,7 @@ app.post('/api/analises', async (req, res) => {
       let snciResult = await safeQuery(`
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.cod_imovel, t.nome_imove, t.num_certif,
-          TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
+          t.data_certi::text as data_certi,
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${snciTable} t
@@ -466,9 +466,9 @@ app.post('/api/analises', async (req, res) => {
       let fundiariaResult = await safeQuery(`
         SELECT t.gid as id,
           t.parcela_co, t.nome_area, t.situacao_i,
-          TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
+          t.data_aprov::text as data_aprov,
           t.codigo_imo, t.registro_m,
-          TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
+          t.registro_d::text as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable} t
         WHERE ST_Intersects(
@@ -491,7 +491,7 @@ app.post('/api/analises', async (req, res) => {
       let snciResult = await safeQuery(`
         SELECT t.gid as id,
           t.cod_imovel, t.nome_imove, t.num_certif,
-          TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
+          t.data_certi::text as data_certi,
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${snciTable} t
