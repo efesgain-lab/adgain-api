@@ -475,17 +475,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
-          AND (
-            ST_Area(ST_Transform(ST_Intersection(
-              CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-            ), 32721)) / NULLIF(ST_Area(ST_Transform(t.geom, 32721)), 0) >= 0.8
-            OR
-            ST_Area(ST_Transform(ST_Intersection(
-              CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-            ), 32721)) / NULLIF(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}), 32721)), 0) >= 0.8
-          )
+          AND ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )::geography) / NULLIF(ST_Area((CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END)::geography), 0) >= 0.3
         ORDER BY ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
@@ -506,17 +499,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
-          AND (
-            ST_Area(ST_Transform(ST_Intersection(
-              CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-            ), 32721)) / NULLIF(ST_Area(ST_Transform(t.geom, 32721)), 0) >= 0.8
-            OR
-            ST_Area(ST_Transform(ST_Intersection(
-              CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-            ), 32721)) / NULLIF(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}), 32721)), 0) >= 0.8
-          )
+          AND ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )::geography) / NULLIF(ST_Area((CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END)::geography), 0) >= 0.3
         ORDER BY ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
@@ -596,7 +582,7 @@ app.post('/api/analises', async (req, res) => {
         "SIGLA"              as sigla,
         "LITOTIPOS"          as litotipos,
         "ERA_MIN"            as era_min,
-        "ERA_MAX"            as era_max,
+        "ERA_MAX"            as era_ma,
         "EON_MIN"            as eon_min,
         "SISTEMA_MIN"        as sistema_min,
         "AMBIENTE_TECTONICO" as ambiente_tectonico,
@@ -828,6 +814,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         ), 32721)) > 0
+          AND ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )::geography) / NULLIF(ST_Area((CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END)::geography), 0) >= 0.3
       `, [geojsonStr]);
     }
 
