@@ -626,7 +626,7 @@ app.post('/api/analises', async (req, res) => {
     };
 
     let embargosResult = await safeQuery(`
-      SELECT id, num_auto_i as auto_numero, dat_embarg as data_embargo, sit_desmat as situacao
+      SELECT id, num_auto_i as auto_numero, nome_embar, cpf_cnpj_e, nome_imove, dat_embarg, qtd_area_e, des_infrac, des_tad, sit_desmat as situacao
       FROM embargos.embargos_ibama
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
