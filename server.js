@@ -679,7 +679,7 @@ app.post('/api/analises', async (req, res) => {
     // Bacias hidrográficas — tenta bacias_nivel_2 a bacias_nivel_6 no schema hidrografia
     const baciasQuery = (nivel) => `
       SELECT nome_bacia, curso_prin, princ_aflu, sub_bacias, suprabacia, ${nivel} as nivel
-      FROM hidrografia.bacias_nivel_${nivel}
+      FROM bacias_hidrograficas.bacias_nivel_${nivel}
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
@@ -1339,7 +1339,7 @@ app.get('/api/test-bacia', async (req, res) => {
     const results = {};
     for (const nivel of [2, 3, 4, 5, 6]) {
           try {
-                  const r = await pool.query('SELECT COUNT(*) as total FROM hidrografia.bacias_nivel_' + nivel);
+                  const r = await pool.query('SELECT COUNT(*) as total FROM bacias_hidrograficas.bacias_nivel_' + nivel);
                   results['n' + nivel] = { ok: true, count: r.rows[0].total };
           } catch (e) {
                   results['n' + nivel] = { ok: false, err: e.message };
