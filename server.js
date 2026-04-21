@@ -336,9 +336,10 @@ app.post('/api/analises', async (req, res) => {
         m."NM_MUN" as municipio,
         m."SIGLA_UF" as uf,
         ST_AsGeoJSON(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as centroid,
-        ROUND(CAST(ST_Area(ST_Transform(ST_Envelope(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)), 32721)) / 10000 AS numeric), 2) as area_hectares
+        ROUND(CAST(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM municipios.municipios_2024 m
-      WHERE ST_Intersects(m.geom, ST_Envelope(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)))
+      WHERE ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      ORDER BY ST_Area(ST_Intersection(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) DESC
       LIMIT 1
     `, [geojsonStr]);
 
