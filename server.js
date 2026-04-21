@@ -478,7 +478,7 @@ app.post('/api/analises', async (req, res) => {
           AND ST_Area(ST_Intersection(
             CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-          )::geography) / NULLIF(ST_Area((CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END)::geography), 0) >= 0.3
+          )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
@@ -502,7 +502,7 @@ app.post('/api/analises', async (req, res) => {
           AND ST_Area(ST_Intersection(
             CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-          )::geography) / NULLIF(ST_Area((CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END)::geography), 0) >= 0.3
+          )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
@@ -817,7 +817,7 @@ app.post('/api/analises', async (req, res) => {
           AND ST_Area(ST_Intersection(
             CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-          )::geography) / NULLIF(ST_Area((CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END)::geography), 0) >= 0.3
+          )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
       `, [geojsonStr]);
     }
 
