@@ -1353,6 +1353,15 @@ app.get('/api/test-bacia', async (req, res) => {
     }
     res.json(results);
 });
+// Endpoint diagnostico: lista schemas e tabelas bacia
+app.get('/api/db-schema', async (req, res) => {
+    const r = {};
+    try { const s = await pool.query('SELECT schema_name FROM information_schema.schemata ORDER BY schema_name'); r.schemas = s.rows.map(x=>x.schema_name); } catch(e){r.schemas_err=e.message;}
+    try { const t = await pool.query("SELECT table_schema,table_name FROM information_schema.tables WHERE table_name ILIKE '%bacia%' ORDER BY table_schema,table_name"); r.bacia_tables=t.rows; } catch(e){r.bacia_err=e.message;}
+    try { const h = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='hidrografia' ORDER BY table_name"); r.hidro_tables=h.rows.map(x=>x.table_name); } catch(e){r.hidro_err=e.message;}
+    res.json(r);
+});
+
 // Catch-all 404
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
