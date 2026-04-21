@@ -1333,6 +1333,26 @@ app.post('/api/relatorio', async (req, res) => {
 // ERROR HANDLING & SERVER START
 // ============================================================================
 
+
+// Endpoint diagnostico bacias hidrograficas
+app.get('/api/test-bacia', async (req, res) => {
+    const results = {};
+    for (const nivel of [2, 3, 4, 5, 6]) {
+          try {
+                  const r = await pool.query('SELECT COUNT(*) as total FROM hidrografia.bacias_nivel_' + nivel);
+                  results['n' + nivel] = { ok: true, count: r.rows[0].total };
+          } catch (e) {
+                  results['n' + nivel] = { ok: false, err: e.message };
+          }
+    }
+    try {
+          const c = await pool.query("SELECT column_name FROM information_schema.columns WHERE table_schema='hidrografia' AND table_name='bacias_nivel_2' ORDER BY ordinal_position");
+          results.cols = c.rows.map(r => r.column_name);
+    } catch (e) {
+          results.cols_err = e.message;
+    }
+    res.json(results);
+});
 // Catch-all 404
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
