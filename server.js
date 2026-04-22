@@ -483,7 +483,6 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         ), 32721)) DESC
-        LIMIT 1
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
@@ -507,7 +506,6 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         ), 32721)) DESC
-        LIMIT 1
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
     }
