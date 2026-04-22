@@ -1553,6 +1553,56 @@ app.get('/api/db-schema', async (req, res) => {
     res.json(r);
 });
 
+// Endpoint diagnóstico: inspeciona tabelas geologia_litologia
+app.get('/api/test-geologia', async (req, res) => {
+  const r = {};
+  const tables = ['geol_ponto','ocorrencias_br','geol_linha_dobra','geol_linha_falha','geol_linha_fratura'];
+
+  // Lista tabelas existentes no schema
+  try {
+    const t = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='geologia_litologia' ORDER BY table_name");
+    r.tables_in_schema = t.rows.map(x=>x.table_name);
+  } catch(e) { r.tables_err = e.message; }
+
+  // Para cada tabela: colunas, SRID e total de linhas
+  for (const tbl of tables) {
+    try {
+      const cols = await pool.query(`
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema='geologia_litologia' AND table_name=$1
+        ORDER BY ordinal_position
+      `, [tbl]);
+      r[tbl] = { columns: cols.rows };
+
+      // tenta pegar SRID e contagem
+      try {
+        const info = await pool.query(`
+          SELECT COUNT(*) as total,
+                 ST_SRID(geom) as srid
+          FROM geologia_litologia.${tbl}
+          LIMIT 1
+        `);
+        r[tbl].count = info.rows[0]?.total;
+        r[tbl].srid  = info.rows[0]?.srid;
+      } catch(e2) { r[tbl].geom_err = e2.message; }
+
+      // tenta pegar nome da coluna de geometria
+      try {
+        const gc = await pool.query(`
+          SELECT f_geometry_column, srid, type
+          FROM geometry_columns
+          WHERE f_table_schema='geologia_litologia' AND f_table_name=$1
+        `, [tbl]);
+        r[tbl].geometry_columns = gc.rows;
+      } catch(e3) { r[tbl].gc_err = e3.message; }
+
+    } catch(e) { r[tbl] = { err: e.message }; }
+  }
+
+  res.json(r);
+});
+
 // Catch-all 404
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
