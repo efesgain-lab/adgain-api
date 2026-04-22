@@ -5,7 +5,7 @@ const cors = require('cors');
 const { Pool } = require('pg');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3000z
 
 // Middleware
 app.use(cors());
@@ -728,12 +728,17 @@ app.post('/api/analises', async (req, res) => {
       FROM hidrografia.geoft_bho_2017_curso_dagua c
       WHERE ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
+    // Nomes de rios via schema rio_nomes — cruzamento ou limite da propriedade (tolerancia 100m)
     const nomesRes = await safeQuery(`
-      SELECT DISTINCT noriocomp AS nome
-      FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
-        AND noriocomp IS NOT NULL AND TRIM(noriocomp) <> ''
-      LIMIT 20
+      SELECT DISTINCT nome
+      FROM rio_nomes.rio_nomes
+      WHERE ST_DWithin(
+              geom::geography,
+              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)::geography,
+              100
+            )
+        AND nome IS NOT NULL AND TRIM(nome) <> ''
+      LIMIT 50
     `, [geojsonStr]);
     const ordensRes = await safeQuery(`
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
