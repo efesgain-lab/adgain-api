@@ -1434,6 +1434,21 @@ app.get('/api/test-bacia', async (req, res) => {
     res.json(results);
 });
 // Endpoint diagnostico: lista schemas e tabelas bacia
+// Diagnóstico: num_area de reserva_legal por cod_imovel
+app.get('/api/test-reserva', async (req, res) => {
+  const cod = req.query.cod || 'AP-1600105-B80400C38AC04BB3AA90346BF37DFAEC';
+  const uf = cod.substring(0, 2).toLowerCase();
+  const table = `car.reserva_legal_${uf}`;
+  try {
+    const r = await pool.query(
+      `SELECT gid, cod_imovel, num_area,
+              ROUND(CAST(ST_Area(ST_Transform(geom, 32721))/10000 AS numeric), 2) as area_geom_ha
+       FROM ${table}
+       WHERE cod_imovel = $1`, [cod]);
+    res.json({ table, cod, rows: r.rows, total_num_area: r.rows.reduce((s, x) => s + parseFloat(x.num_area || 0), 0) });
+  } catch(e) { res.json({ error: e.message, table, cod }); }
+});
+
 app.get('/api/db-schema', async (req, res) => {
     const r = {};
     try { const s = await pool.query('SELECT schema_name FROM information_schema.schemata ORDER BY schema_name'); r.schemas = s.rows.map(x=>x.schema_name); } catch(e){r.schemas_err=e.message;}
