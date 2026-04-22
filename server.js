@@ -620,13 +620,13 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.5_geologia'].pontos = geolPontoResult.rows;
 
-    // ocorrencias_br
+    // ocorrências_br (nome com acento; SRID=4326 — converte parcel para 4326)
     const ocorrenciasResult = await safeQuery(`
       SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras
-      FROM geologia_litologia.ocorrencias_br
+      FROM geologia_litologia."ocorrências_br"
       WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        geom,
+        ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326)
       )
     `, [geojsonStr]);
     analyses['9.5_geologia'].ocorrencias = ocorrenciasResult.rows;
