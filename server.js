@@ -922,35 +922,44 @@ app.post('/api/analises', async (req, res) => {
     if (codImoveisCar.length > 0) {
       const placeholders = codImoveisCar.map((_, i) => `$${i + 1}`).join(', ');
 
-      // Reserva Legal: busca num_area pelo cod_imovel exato (valor declarado no CAR)
+      // Reserva Legal: DISTINCT ON (gid) para evitar duplicatas na tabela CAR
       let reservaLegalResult = await safeQuery(`
-        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
-        FROM ${carReservaTable}
-        WHERE cod_imovel IN (${placeholders})
+        SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
+        FROM (
+          SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
+          FROM ${carReservaTable}
+          WHERE cod_imovel IN (${placeholders})
+        ) d
       `, codImoveisCar);
 
       if (reservaLegalResult.rows[0] && reservaLegalResult.rows[0].area_ha) {
         analyses['9.13_car'].reserva_legal_hectares = parseFloat(reservaLegalResult.rows[0].area_ha);
       }
 
-      // Vegetação Nativa: busca num_area pelo cod_imovel exato
+      // Vegetação Nativa: DISTINCT ON (gid) para evitar duplicatas
       let vegNativaResult = await safeQuery(`
-        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
-        FROM ${carVegNativaTable}
-        WHERE cod_imovel IN (${placeholders})
+        SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
+        FROM (
+          SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
+          FROM ${carVegNativaTable}
+          WHERE cod_imovel IN (${placeholders})
+        ) d
       `, codImoveisCar);
 
       if (vegNativaResult.rows[0] && vegNativaResult.rows[0].area_ha) {
         analyses['9.13_car'].vegetacao_nativa_hectares = parseFloat(vegNativaResult.rows[0].area_ha);
       }
 
-      // Área Consolidada: busca num_area pelo cod_imovel exato
+      // Área Consolidada: DISTINCT ON (gid) para evitar duplicatas
       let areaConsolidadaResult;
       try {
         areaConsolidadaResult = await pool.query(`
-          SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
-          FROM ${carAreaConsolidadaTable}
-          WHERE cod_imovel IN (${placeholders})
+          SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
+          FROM (
+            SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
+            FROM ${carAreaConsolidadaTable}
+            WHERE cod_imovel IN (${placeholders})
+          ) d
         `, codImoveisCar);
       } catch (e) {
         console.error('[DEBUG] areaConsolidada ERRO:', e.message, '| tabela:', carAreaConsolidadaTable);
