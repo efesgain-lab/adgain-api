@@ -602,67 +602,12 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.5_geologia'].data = geologiaResult.rows;
 
-    // 9.5b Geologia — pontos, ocorrências e estruturas lineares (geologia_litologia)
-    analyses['9.5_geologia'].pontos       = [];
-    analyses['9.5_geologia'].ocorrencias  = [];
-    analyses['9.5_geologia'].dobras       = [];
-    analyses['9.5_geologia'].falhas       = [];
-    analyses['9.5_geologia'].fraturas     = [];
-
-    // geol_ponto
-    const geolPontoResult = await safeQuery(`
-      SELECT cod_fcim, ds_afl1
-      FROM geologia_litologia.geol_ponto
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
-    analyses['9.5_geologia'].pontos = geolPontoResult.rows;
-
-    // ocorrências_br (nome com acento; SRID=4326 — converte parcel para 4326)
-    const ocorrenciasResult = await safeQuery(`
-      SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras
-      FROM geologia_litologia."ocorrências_br"
-      WHERE ST_Intersects(
-        geom,
-        ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326)
-      )
-    `, [geojsonStr]);
-    analyses['9.5_geologia'].ocorrencias = ocorrenciasResult.rows;
-
-    // geol_linha_dobra
-    const dobrasResult = await safeQuery(`
-      SELECT cd_fcim, classif, caract_eix, caime_eix
-      FROM geologia_litologia.geol_linha_dobra
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
-    analyses['9.5_geologia'].dobras = dobrasResult.rows;
-
-    // geol_linha_falha
-    const falhasResult = await safeQuery(`
-      SELECT cd_fcim, classif, forma, estm_merg, sentido
-      FROM geologia_litologia.geol_linha_falha
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
-    analyses['9.5_geologia'].falhas = falhasResult.rows;
-
-    // geol_linha_fratura
-    const fraturasResult = await safeQuery(`
-      SELECT cd_fcim, classif, forma
-      FROM geologia_litologia.geol_linha_fratura
-      WHERE ST_Intersects(
-        CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
-    analyses['9.5_geologia'].fraturas = fraturasResult.rows;
+    // 9.5b — pontos/ocorrências/estruturas são preenchidos pelo bloco 9.14 mais abaixo
+    analyses['9.5_geologia'].pontos      = [];
+    analyses['9.5_geologia'].ocorrencias = [];
+    analyses['9.5_geologia'].dobras      = [];
+    analyses['9.5_geologia'].falhas      = [];
+    analyses['9.5_geologia'].fraturas    = [];
 
     // 9.6 Mineração (ANM) — colunas: PROCESSO, FASE, NOME, SUBS
     analyses['9.6_mineracao'] = {
@@ -1083,54 +1028,50 @@ app.post('/api/analises', async (req, res) => {
       },
     };
 
-    // Afloramentos geológicos
+    // Afloramentos geológicos (geol_ponto) — SRID 4674
     let geolPontoResult = await safeQuery(`
-      SELECT id, cd_fcim as cod_afloramento, nm_unidade as nome, tipo_pto as tipo,
-             ds_afl1 as descricao, fonte
+      SELECT cd_fcim, ds_afl1, nm_unidade as nome, tipo_pto as tipo, fonte
       FROM geologia_litologia.geol_ponto
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.pontos = geolPontoResult.rows;
+    analyses['9.5_geologia'].pontos = geolPontoResult.rows.map(r => ({ cod_fcim: r.cd_fcim, ds_afl1: r.ds_afl1 }));
 
-    // Ocorrências minerais (nome da tabela tem acento — usar aspas duplas)
+    // Ocorrências minerais — tabela com acento "ocorrências_br", SRID 4326
     let ocorrenciasResult = await safeQuery(`
-      SELECT id, "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras
+      SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras
       FROM geologia_litologia."ocorrências_br"
-      WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ST_Intersects(geom, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.ocorrencias = ocorrenciasResult.rows;
+    analyses['9.5_geologia'].ocorrencias = ocorrenciasResult.rows;
 
-    // Dobras
+    // Dobras — SRID 4674
     let geolLinhaDbraResult = await safeQuery(`
-      SELECT id, cd_fcim, classif as tipo, caract_eix as caracteristica_eixo, caime_eix as caimento_eixo
+      SELECT cd_fcim, classif, caract_eix, caime_eix
       FROM geologia_litologia.geol_linha_dobra
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_dobra = geolLinhaDbraResult.rows;
+    analyses['9.5_geologia'].dobras = geolLinhaDbraResult.rows;
 
-    // Falhas
+    // Falhas — SRID 4674
     let geolLinhaFalhaResult = await safeQuery(`
-      SELECT id, cd_fcim, classif as tipo, forma, estm_merg as mergulho, sentido, compr as comprimento_m
+      SELECT cd_fcim, classif, forma, estm_merg, sentido
       FROM geologia_litologia.geol_linha_falha
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_falha = geolLinhaFalhaResult.rows;
+    analyses['9.5_geologia'].falhas = geolLinhaFalhaResult.rows;
 
-    // Fraturas — tenta com estm_merg primeiro, fallback sem mergulho
+    // Fraturas — SRID 4674
     let geolLinhaFraturaResult = await safeQuery(`
-      SELECT id, cd_fcim, classif as tipo, forma, estm_merg as mergulho
+      SELECT cd_fcim, classif, forma
       FROM geologia_litologia.geol_linha_fratura
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
-    if (geolLinhaFraturaResult.rows.length === 0) {
-      // Tenta sem a coluna estm_merg caso não exista
-      geolLinhaFraturaResult = await safeQuery(`
-        SELECT id, cd_fcim, classif as tipo, forma
-        FROM geologia_litologia.geol_linha_fratura
-        WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
-      `, [geojsonStr]);
-    }
     analyses['9.14_analises_adicionais'].geologia.linhas_fratura = geolLinhaFraturaResult.rows;
+    analyses['9.5_geologia'].fraturas = geolLinhaFraturaResult.rows;
 
     // Tectônicas — todas as tabelas do schema tectonic_map
     const tectonicGeoFilter = `ST_DWithin(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 1.0)`;
