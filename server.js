@@ -336,9 +336,10 @@ app.post('/api/analises', async (req, res) => {
         m."NM_MUN" as municipio,
         m."SIGLA_UF" as uf,
         ST_AsGeoJSON(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as centroid,
-        ROUND(CAST(ST_Area(ST_Transform(ST_Envelope(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)), 32721)) / 10000 AS numeric), 2) as area_hectares
+        ROUND(CAST(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM municipios.municipios_2024 m
-      WHERE ST_Intersects(m.geom, ST_Envelope(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)))
+      WHERE ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      ORDER BY ST_Area(ST_Intersection(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) DESC
       LIMIT 1
     `, [geojsonStr]);
 
@@ -423,19 +424,19 @@ app.post('/api/analises', async (req, res) => {
       let fundiariaResult = await safeQuery(`
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.parcela_co, t.nome_area, t.situacao_i,
-          TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
+          t.data_aprov::text as data_aprov,
           t.codigo_imo, t.registro_m,
-          TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
+          t.registro_d::text as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable} t
         WHERE ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        AND ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY t.gid
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
@@ -444,7 +445,7 @@ app.post('/api/analises', async (req, res) => {
       let snciResult = await safeQuery(`
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.cod_imovel, t.nome_imove, t.num_certif,
-          TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
+          t.data_certi::text as data_certi,
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${snciTable} t
@@ -452,10 +453,10 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        AND ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY t.gid
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
@@ -465,20 +466,23 @@ app.post('/api/analises', async (req, res) => {
       let fundiariaResult = await safeQuery(`
         SELECT t.gid as id,
           t.parcela_co, t.nome_area, t.situacao_i,
-          TO_CHAR(t.data_aprov, 'DD/MM/YYYY') as data_aprov,
+          t.data_aprov::text as data_aprov,
           t.codigo_imo, t.registro_m,
-          TO_CHAR(t.registro_d, 'DD/MM/YYYY') as registro_d,
+          t.registro_d::text as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable} t
         WHERE ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
+          AND ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         ), 32721)) DESC
-        LIMIT 1
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].sigef = fundiariaResult.rows;
 
@@ -486,7 +490,7 @@ app.post('/api/analises', async (req, res) => {
       let snciResult = await safeQuery(`
         SELECT t.gid as id,
           t.cod_imovel, t.nome_imove, t.num_certif,
-          TO_CHAR(t.data_certi, 'DD/MM/YYYY') as data_certi,
+          t.data_certi::text as data_certi,
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${snciTable} t
@@ -494,11 +498,14 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
+          AND ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
         ORDER BY ST_Area(ST_Transform(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         ), 32721)) DESC
-        LIMIT 1
       `, [geojsonStr]);
       analyses['9.1_fundiaria'].snci = snciResult.rows;
     }
@@ -573,7 +580,7 @@ app.post('/api/analises', async (req, res) => {
         "SIGLA"              as sigla,
         "LITOTIPOS"          as litotipos,
         "ERA_MIN"            as era_min,
-        "ERA_MAX"            as era_max,
+        "ERA_MAX"            as era_ma,
         "EON_MIN"            as eon_min,
         "SISTEMA_MIN"        as sistema_min,
         "AMBIENTE_TECTONICO" as ambiente_tectonico,
@@ -626,7 +633,7 @@ app.post('/api/analises', async (req, res) => {
     };
 
     let embargosResult = await safeQuery(`
-      SELECT id, num_auto_i as auto_numero, dat_embarg as data_embargo, sit_desmat as situacao
+      SELECT id, num_auto_i as auto_numero, nome_embar, cpf_cnpj_e, nome_imove, dat_embarg, qtd_area_e, des_infrac, des_tad, sit_desmat as situacao
       FROM embargos.embargos_ibama
       WHERE ST_Intersects(
         CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -674,7 +681,7 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.9_ucs'].data = ucsResult.rows;
 
     // 9.10 Hidrografia
-    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false };
+    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0 };
 
     // Bacias hidrográficas — tenta bacias_nivel_2 a bacias_nivel_6 no schema hidrografia
     const baciasRows = [];
@@ -708,6 +715,67 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].cursos_agua_count = parseInt(cursosResult.rows[0]?.total || 0);
     analyses['9.10_hidrografia'].rica_em_agua = analyses['9.10_hidrografia'].cursos_agua_count > 5;
 
+    // Padrao de drenagem (hidrografia.geoft_bho_2017_curso_dagua) — analise em raio de 5km
+    const RAIO_DRENAGEM_KM = 25;
+    const padraoAgg = await safeQuery(`
+      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+      buffered AS (SELECT ST_Buffer(ST_Centroid(g)::geography, ${RAIO_DRENAGEM_KM}*1000)::geometry AS bg FROM parcel),
+      courses AS (
+        SELECT MOD(degrees(ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom)))::numeric, 180::numeric) AS az
+        FROM hidrografia.geoft_bho_2017_curso_dagua c, buffered b
+        WHERE ST_Intersects(c.geom, b.bg)
+      )
+      SELECT COUNT(*)::int AS total, COALESCE(ROUND(STDDEV(az)::numeric, 1), 0) AS std_az FROM courses
+    `, [geojsonStr]);
+    const compParcelRes = await safeQuery(`
+      SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))::geography)), 0) AS len_m
+      FROM hidrografia.geoft_bho_2017_curso_dagua c
+      WHERE ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+    `, [geojsonStr]);
+    // Nomes de rios: hidrografia.rio_nomes (NORIOCOMP) — ST_DWithin 100m
+    const nomesRes = await safeQuery(`
+      SELECT DISTINCT "NORIOCOMP"::text AS nome
+      FROM hidrografia.rio_nomes
+      WHERE ST_DWithin(
+              geom::geography,
+              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)::geography,
+              100
+            )
+        AND "NORIOCOMP" IS NOT NULL AND TRIM("NORIOCOMP"::text) <> ''
+      LIMIT 50
+    `, [geojsonStr]);
+    const ordensRes = await safeQuery(`
+      SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
+      FROM hidrografia.geoft_bho_2017_curso_dagua
+      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      GROUP BY nuordemcda ORDER BY nuordemcda DESC
+    `, [geojsonStr]);
+    const totalRaio = parseInt(padraoAgg.rows[0]?.total || 0);
+    const stdAz = parseFloat(padraoAgg.rows[0]?.std_az || 0);
+    const lenKm = parseFloat(((compParcelRes.rows[0]?.len_m || 0) / 1000).toFixed(2));
+    let padrao = 'Indefinido', descricao = 'Sem dados suficientes para definir o padrao';
+    if (totalRaio >= 3) {
+      if (stdAz < 25) { padrao = 'Paralelo'; descricao = "Cursos d'agua fluem em direcoes semelhantes, sugerindo controle estrutural ou relevo inclinado uniforme."; }
+      else if (stdAz < 50) { padrao = 'Subparalelo'; descricao = 'Padrao intermediario - orientacao parcialmente consistente.'; }
+      else { padrao = 'Dendritico'; descricao = 'Cursos ramificam-se como galhos de arvore - tipico em litologia homogenea e relevo suave.'; }
+    }
+    const ordens = ordensRes.rows || [];
+    const ordemMax = ordens.reduce((m, r) => Math.max(m, parseInt(r.ordem || 0)), 0);
+    const ordem1 = parseInt(ordens.find(r => parseInt(r.ordem) === 1)?.cnt || 0);
+    const ordem2 = parseInt(ordens.find(r => parseInt(r.ordem) === 2)?.cnt || 0);
+    const ordem3plus = ordens.filter(r => parseInt(r.ordem) >= 3).reduce((s, r) => s + parseInt(r.cnt || 0), 0);
+    analyses['9.10_hidrografia'].padrao_drenagem = {
+      padrao, descricao,
+      raio_analise_km: RAIO_DRENAGEM_KM,
+      total_raio: totalRaio,
+      desvio_azimuth: stdAz,
+      comprimento_km: lenKm,
+      ordem_maxima: ordemMax,
+      ordem1, ordem2, ordem3plus
+    };
+    analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
+    analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
+
     // 9.11 Altitude
     analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null };
     let altitudeResult = await safeQuery(`
@@ -735,6 +803,13 @@ app.post('/api/analises', async (req, res) => {
       if (centroidAltResult.rows[0]) {
         analyses['9.11_altitude'].ponto_m = centroidAltResult.rows[0].altitude;
       }
+    }
+
+    // Fallback: se altitude (min/max/media) nao retornou dados, usa ponto_m
+    if (analyses['9.11_altitude'].min_m === null && analyses['9.11_altitude'].ponto_m !== null) {
+      analyses['9.11_altitude'].min_m = analyses['9.11_altitude'].ponto_m;
+      analyses['9.11_altitude'].max_m = analyses['9.11_altitude'].ponto_m;
+      analyses['9.11_altitude'].media_m = analyses['9.11_altitude'].ponto_m;
     }
 
     // 9.12 Carbono do Solo
@@ -805,10 +880,14 @@ app.post('/api/analises', async (req, res) => {
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           sp.pt
         )
-        AND ST_Area(ST_Transform(ST_Intersection(
+        AND ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        ), 32721)) > 0
+        )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
+          AND ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
       `, [geojsonStr]);
     }
 
@@ -1050,11 +1129,12 @@ app.post('/api/analises', async (req, res) => {
       terras_indigenas:     analyses['9.8_terras_indigenas'].data,
       unidades_conservacao: analyses['9.9_ucs'].data,
       hidrografia: {
-        bacias:              analyses['9.10_hidrografia'].bacias,
-        cursos_dagua_count:  analyses['9.10_hidrografia'].cursos_agua_count,
-        intensidade_hidrica: analyses['9.10_hidrografia'].rica_em_agua ? 'Alta' : 'Normal',
-        comprimento_influencia_km: 0,
-        nomes_rios: [],
+        bacias:                   analyses['9.10_hidrografia'].bacias,
+        cursos_dagua_count:       analyses['9.10_hidrografia'].cursos_agua_count,
+        intensidade_hidrica:      analyses['9.10_hidrografia'].rica_em_agua ? 'Alta' : 'Normal',
+        padrao_drenagem:          analyses['9.10_hidrografia'].padrao_drenagem,
+        comprimento_influencia_km: analyses['9.10_hidrografia'].comprimento_influencia_km || 0,
+        nomes_rios:               analyses['9.10_hidrografia'].nomes_rios || [],
       },
       altitude: {
         altitude_min:    analyses['9.11_altitude'].min_m,
@@ -1333,6 +1413,35 @@ app.post('/api/relatorio', async (req, res) => {
 // ============================================================================
 // ERROR HANDLING & SERVER START
 // ============================================================================
+
+
+// Endpoint diagnostico bacias hidrograficas
+app.get('/api/test-bacia', async (req, res) => {
+    const results = {};
+    for (const nivel of [2, 3, 4, 5, 6]) {
+          try {
+                  const r = await pool.query('SELECT COUNT(*) as total FROM bacias_hidrograficas.bacias_nivel_' + nivel);
+                  results['n' + nivel] = { ok: true, count: r.rows[0].total };
+          } catch (e) {
+                  results['n' + nivel] = { ok: false, err: e.message };
+          }
+    }
+    try {
+          const c = await pool.query("SELECT column_name FROM information_schema.columns WHERE table_schema='hidrografia' AND table_name='bacias_nivel_2' ORDER BY ordinal_position");
+          results.cols = c.rows.map(r => r.column_name);
+    } catch (e) {
+          results.cols_err = e.message;
+    }
+    res.json(results);
+});
+// Endpoint diagnostico: lista schemas e tabelas bacia
+app.get('/api/db-schema', async (req, res) => {
+    const r = {};
+    try { const s = await pool.query('SELECT schema_name FROM information_schema.schemata ORDER BY schema_name'); r.schemas = s.rows.map(x=>x.schema_name); } catch(e){r.schemas_err=e.message;}
+    try { const t = await pool.query("SELECT table_schema,table_name FROM information_schema.tables WHERE table_name ILIKE '%bacia%' ORDER BY table_schema,table_name"); r.bacia_tables=t.rows; } catch(e){r.bacia_err=e.message;}
+    try { const h = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='hidrografia' ORDER BY table_name"); r.hidro_tables=h.rows.map(x=>x.table_name); } catch(e){r.hidro_err=e.message;}
+    res.json(r);
+});
 
 // Catch-all 404
 app.use((req, res) => {
