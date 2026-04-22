@@ -681,7 +681,7 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.9_ucs'].data = ucsResult.rows;
 
     // 9.10 Hidrografia
-    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false };
+    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0 };
 
     // Bacias hidrográficas — tenta bacias_nivel_2 a bacias_nivel_6 no schema hidrografia
     const baciasQuery = (nivel) => `
@@ -710,6 +710,62 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.10_hidrografia'].cursos_agua_count = parseInt(cursosResult.rows[0]?.total || 0);
     analyses['9.10_hidrografia'].rica_em_agua = analyses['9.10_hidrografia'].cursos_agua_count > 5;
+
+    // Padrao de drenagem (hidrografia.geoft_bho_2017_curso_dagua) — analise em raio de 5km
+    const RAIO_DRENAGEM_KM = 5;
+    const padraoAgg = await safeQuery(`
+      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+      buffered AS (SELECT ST_Buffer(g::geography, ${RAIO_DRENAGEM_KM}*1000)::geometry AS bg FROM parcel),
+      courses AS (
+        SELECT MOD(degrees(ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom)))::numeric, 180::numeric) AS az
+        FROM hidrografia.geoft_bho_2017_curso_dagua c, buffered b
+        WHERE ST_Intersects(c.geom, b.bg)
+      )
+      SELECT COUNT(*)::int AS total, COALESCE(ROUND(STDDEV(az)::numeric, 1), 0) AS std_az FROM courses
+    `, [geojsonStr]);
+    const compParcelRes = await safeQuery(`
+      SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))::geography)), 0) AS len_m
+      FROM hidrografia.geoft_bho_2017_curso_dagua c
+      WHERE ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+    `, [geojsonStr]);
+    const nomesRes = await safeQuery(`
+      SELECT DISTINCT noriocomp AS nome
+      FROM hidrografia.geoft_bho_2017_curso_dagua
+      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+        AND noriocomp IS NOT NULL AND TRIM(noriocomp) <> ''
+      LIMIT 20
+    `, [geojsonStr]);
+    const ordensRes = await safeQuery(`
+      SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
+      FROM hidrografia.geoft_bho_2017_curso_dagua
+      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      GROUP BY nuordemcda ORDER BY nuordemcda DESC
+    `, [geojsonStr]);
+    const totalRaio = parseInt(padraoAgg.rows[0]?.total || 0);
+    const stdAz = parseFloat(padraoAgg.rows[0]?.std_az || 0);
+    const lenKm = parseFloat(((compParcelRes.rows[0]?.len_m || 0) / 1000).toFixed(2));
+    let padrao = 'Indefinido', descricao = 'Sem dados suficientes para definir o padrao';
+    if (totalRaio >= 3) {
+      if (stdAz < 25) { padrao = 'Paralelo'; descricao = "Cursos d'agua fluem em direcoes semelhantes, sugerindo controle estrutural ou relevo inclinado uniforme."; }
+      else if (stdAz < 50) { padrao = 'Subparalelo'; descricao = 'Padrao intermediario - orientacao parcialmente consistente.'; }
+      else { padrao = 'Dendritico'; descricao = 'Cursos ramificam-se como galhos de arvore - tipico em litologia homogenea e relevo suave.'; }
+    }
+    const ordens = ordensRes.rows || [];
+    const ordemMax = ordens.reduce((m, r) => Math.max(m, parseInt(r.ordem || 0)), 0);
+    const ordem1 = parseInt(ordens.find(r => parseInt(r.ordem) === 1)?.cnt || 0);
+    const ordem2 = parseInt(ordens.find(r => parseInt(r.ordem) === 2)?.cnt || 0);
+    const ordem3plus = ordens.filter(r => parseInt(r.ordem) >= 3).reduce((s, r) => s + parseInt(r.cnt || 0), 0);
+    analyses['9.10_hidrografia'].padrao_drenagem = {
+      padrao, descricao,
+      raio_analise_km: RAIO_DRENAGEM_KM,
+      total_raio: totalRaio,
+      desvio_azimuth: stdAz,
+      comprimento_km: lenKm,
+      ordem_maxima: ordemMax,
+      ordem1, ordem2, ordem3plus
+    };
+    analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
+    analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
 
     // 9.11 Altitude
     analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null };
@@ -1067,11 +1123,12 @@ app.post('/api/analises', async (req, res) => {
       terras_indigenas:     analyses['9.8_terras_indigenas'].data,
       unidades_conservacao: analyses['9.9_ucs'].data,
       hidrografia: {
-        bacias:              analyses['9.10_hidrografia'].bacias,
-        cursos_dagua_count:  analyses['9.10_hidrografia'].cursos_agua_count,
-        intensidade_hidrica: analyses['9.10_hidrografia'].rica_em_agua ? 'Alta' : 'Normal',
-        comprimento_influencia_km: 0,
-        nomes_rios: [],
+        bacias:                   analyses['9.10_hidrografia'].bacias,
+        cursos_dagua_count:       analyses['9.10_hidrografia'].cursos_agua_count,
+        intensidade_hidrica:      analyses['9.10_hidrografia'].rica_em_agua ? 'Alta' : 'Normal',
+        padrao_drenagem:          analyses['9.10_hidrografia'].padrao_drenagem,
+        comprimento_influencia_km: analyses['9.10_hidrografia'].comprimento_influencia_km || 0,
+        nomes_rios:               analyses['9.10_hidrografia'].nomes_rios || [],
       },
       altitude: {
         altitude_min:    analyses['9.11_altitude'].min_m,
