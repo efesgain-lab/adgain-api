@@ -712,10 +712,10 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].rica_em_agua = analyses['9.10_hidrografia'].cursos_agua_count > 5;
 
     // Padrao de drenagem (hidrografia.geoft_bho_2017_curso_dagua) — analise em raio de 5km
-    const RAIO_DRENAGEM_KM = 5;
+    const RAIO_DRENAGEM_KM = 25;
     const padraoAgg = await safeQuery(`
       WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
-      buffered AS (SELECT ST_Buffer(g::geography, ${RAIO_DRENAGEM_KM}*1000)::geometry AS bg FROM parcel),
+      buffered AS (SELECT ST_Buffer(ST_Centroid(g)::geography, ${RAIO_DRENAGEM_KM}*1000)::geometry AS bg FROM parcel),
       courses AS (
         SELECT MOD(degrees(ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom)))::numeric, 180::numeric) AS az
         FROM hidrografia.geoft_bho_2017_curso_dagua c, buffered b
