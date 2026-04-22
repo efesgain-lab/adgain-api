@@ -728,32 +728,39 @@ app.post('/api/analises', async (req, res) => {
       FROM hidrografia.geoft_bho_2017_curso_dagua c
       WHERE ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
-    // Nomes de rios via schema rio_nomes (auto-descoberta da tabela/coluna)
+    // Nomes de rios: busca em TODOS os schemas por tabela com coluna de nome+geom (auto-descoberta)
     const rioTablesRes = await safeQuery(`
-      SELECT t.table_name,
+      SELECT t.table_schema, t.table_name,
              array_agg(c.column_name ORDER BY c.ordinal_position) AS cols
       FROM information_schema.tables t
       JOIN information_schema.columns c
         ON c.table_schema = t.table_schema AND c.table_name = t.table_name
-      WHERE t.table_schema = 'rio_nomes'
-      GROUP BY t.table_name
+      WHERE t.table_schema NOT IN ('pg_catalog','information_schema','pg_toast')
+        AND (t.table_name ILIKE '%rio%' OR t.table_name ILIKE '%nome%' OR t.table_schema ILIKE '%rio%' OR t.table_schema ILIKE '%nome%')
+      GROUP BY t.table_schema, t.table_name
     `, []);
-    console.log('[DEBUG] rio_nomes schema:', JSON.stringify(rioTablesRes.rows));
-    let rioTable = null, rioNameCol = null, rioGeomCol = null;
-    const nameCandidates = ['nome','noriocomp','nm_rio','nome_rio','nm','name','rio','descricao'];
-    const geomCandidates = ['geom','the_geom','geometry','shape'];
+    console.log('[DEBUG] candidate tables:', JSON.stringify(rioTablesRes.rows));
+    let rioSchema = null, rioTable = null, rioNameCol = null, rioGeomCol = null;
+    const nameCandidates = ['nome','noriocomp','nm_rio','nome_rio','nm','name','rio','descricao','desc_rio','label'];
+    const geomCandidates = ['geom','the_geom','geometry','shape','wkb_geometry'];
     for (const row of (rioTablesRes.rows || [])) {
       const cols = (row.cols || []).map(c => String(c).toLowerCase());
       const g = geomCandidates.find(c => cols.includes(c));
       const n = nameCandidates.find(c => cols.includes(c));
-      if (g && n) { rioTable = row.table_name; rioGeomCol = g; rioNameCol = n; break; }
+      if (g && n) {
+        rioSchema = row.table_schema;
+        rioTable = row.table_name;
+        rioGeomCol = g;
+        rioNameCol = n;
+        break;
+      }
     }
     let nomesRes = { rows: [] };
     if (rioTable && rioNameCol && rioGeomCol) {
-      console.log('[DEBUG] using rio_nomes.' + rioTable + ' (name=' + rioNameCol + ', geom=' + rioGeomCol + ')');
+      console.log('[DEBUG] using ' + rioSchema + '.' + rioTable + ' name=' + rioNameCol + ' geom=' + rioGeomCol);
       nomesRes = await safeQuery(`
-        SELECT DISTINCT "${rioNameCol}" AS nome
-        FROM rio_nomes."${rioTable}"
+        SELECT DISTINCT "${rioNameCol}"::text AS nome
+        FROM "${rioSchema}"."${rioTable}"
         WHERE ST_DWithin(
                 "${rioGeomCol}"::geography,
                 ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)::geography,
@@ -762,6 +769,8 @@ app.post('/api/analises', async (req, res) => {
           AND "${rioNameCol}" IS NOT NULL AND TRIM("${rioNameCol}"::text) <> ''
         LIMIT 50
       `, [geojsonStr]);
+    } else {
+      console.log('[DEBUG] no compatible table found for river names');
     }
     const ordensRes = await safeQuery(`
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
