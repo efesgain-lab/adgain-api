@@ -1251,4 +1251,210 @@ app.get('/api/camadas/:camada', async (req, res) => {
         queryTargets = ufs.flatMap(u => [
           safeQuery(
             `SELECT ${sigefCfg.idCol}, ${sigefCfg.labelCol} as label, 'sigef' as source,
-               ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as
+               ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as               ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
+             FROM ${sigefCfg.schema}.${sigefCfg.prefix}_${u}
+             WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             ORDER BY dist_center ASC LIMIT ${limitPerState}`,
+            [bboxWkt, centerLng, centerLat]
+          ),
+          safeQuery(
+            `SELECT ${snciCfg.idCol}, ${snciCfg.labelCol} as label, 'snci' as source,
+               ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
+               ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
+             FROM ${snciCfg.schema}.${snciCfg.prefix}_${u}
+             WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             ORDER BY dist_center ASC LIMIT ${limitPerState}`,
+            [bboxWkt, centerLng, centerLat]
+          ),
+        ]);
+      } else {
+        queryTargets = ufs.map(u => safeQuery(
+          `SELECT ${idCol}, ${labelCol} as label,
+             ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
+             ST_Distance(
+               ST_Centroid(${geomExpr}),
+               ST_SetSRID(ST_MakePoint($2, $3), ${SRID})
+             ) as dist_center
+           FROM ${cfg.schema}.${cfg.prefix}_${u}
+           WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             ${extraFilter}
+           ORDER BY dist_center ASC
+           LIMIT ${limitPerState}`,
+          [bboxWkt, centerLng, centerLat]
+        ));
+      }
+
+      const perStateResults = await Promise.all(queryTargets);
+
+      // Merge todos os estados, ordena globalmente do centro para fora
+      const allRows = perStateResults
+        .flatMap(r => r.rows)
+        .sort((a, b) => a.dist_center - b.dist_center)
+        .slice(0, limitTotal);
+      const features = allRows
+        .filter(row => row.geometry != null)
+        .map(row => ({
+          type: 'Feature',
+          id: `${row.source || camada}_${row[idCol]}`,
+          properties: { label: row.label, source: row.source || camada },
+          geometry: JSON.parse(row.geometry),
+        }));
+
+      return res.json({ type: 'FeatureCollection', features });
+
+    } else if (staticLayerConfig[camada]) {
+      // STATIC: single table, existing logic
+      const cfg = staticLayerConfig[camada];
+      idCol = cfg.idCol;
+      labelCol = cfg.labelCol;
+
+      query = `
+        SELECT ${idCol}, ${labelCol} as label,
+          ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry
+        FROM ${cfg.table}
+        WHERE ST_Intersects(${geomExpr}, ST_GeomFromText('${bboxWkt}'))
+        LIMIT 500
+      `;
+    } else {
+      return res.status(400).json({ error: 'Unknown camada: ' + camada });
+    }
+
+    let result = await pool.query(query);
+
+    // Convert to GeoJSON FeatureCollection
+    const features = result.rows
+      .filter(row => row.geometry != null)
+      .map(row => ({
+        type: 'Feature',
+        id: row[idCol],
+        properties: {
+          label: row.label,
+        },
+        geometry: JSON.parse(row.geometry),
+      }));
+
+    res.json({
+      type: 'FeatureCollection',
+      features: features,
+    });
+  } catch (error) {
+    console.error('Error in /api/camadas/:camada:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/exportar
+ * Export as GeoJSON or KML
+ */
+app.post('/api/exportar', async (req, res) => {
+  try {
+    const { geojson, formato = 'geojson' } = req.body;
+
+    if (!geojson) {
+      return res.status(400).json({ error: 'geojson required in body' });
+    }
+
+    const feature = parseGeoJSONFeature(geojson);
+
+    if (formato === 'kml') {
+      // Convert to KML using PostGIS ST_AsKML
+      const result = await pool.query(`
+        SELECT ST_AsKML(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) as kml
+      `, [JSON.stringify(feature)]);
+
+      res.setHeader('Content-Type', 'application/vnd.google-earth.kml+xml');
+      res.setHeader('Content-Disposition', 'attachment; filename="export.kml"');
+      res.send(result.rows[0].kml);
+    } else {
+      // Return as GeoJSON
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename="export.geojson"');
+      res.json(feature);
+    }
+  } catch (error) {
+    console.error('Error in /api/exportar:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/relatorio
+ * Generate PDF report
+ */
+app.post('/api/relatorio', async (req, res) => {
+  try {
+    const { analyses, municipio, geojson } = req.body;
+
+    if (!analyses) {
+      return res.status(400).json({ error: 'analyses required in body' });
+    }
+
+    // Import reportService
+    const reportService = require('./reportService');
+
+    const pdfBuffer = await reportService.generatePDF({
+      analyses: analyses,
+      municipio: municipio,
+      geojson: geojson,
+      generatedAt: new Date(),
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="adgain-relatorio.pdf"');
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Error in /api/relatorio:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// ERROR HANDLING & SERVER START
+// ============================================================================
+
+
+// Endpoint diagnostico bacias hidrograficas
+app.get('/api/test-bacia', async (req, res) => {
+    const results = {};
+    for (const nivel of [2, 3, 4, 5, 6]) {
+          try {
+                  const r = await pool.query('SELECT COUNT(*) as total FROM bacias_hidrograficas.bacias_nivel_' + nivel);
+                  results['n' + nivel] = { ok: true, count: r.rows[0].total };
+          } catch (e) {
+                  results['n' + nivel] = { ok: false, err: e.message };
+          }
+    }
+    try {
+          const c = await pool.query("SELECT column_name FROM information_schema.columns WHERE table_schema='hidrografia' AND table_name='bacias_nivel_2' ORDER BY ordinal_position");
+          results.cols = c.rows.map(r => r.column_name);
+    } catch (e) {
+          results.cols_err = e.message;
+    }
+    res.json(results);
+});
+// Endpoint diagnostico: lista schemas e tabelas bacia
+app.get('/api/db-schema', async (req, res) => {
+    const r = {};
+    try { const s = await pool.query('SELECT schema_name FROM information_schema.schemata ORDER BY schema_name'); r.schemas = s.rows.map(x=>x.schema_name); } catch(e){r.schemas_err=e.message;}
+    try { const t = await pool.query("SELECT table_schema,table_name FROM information_schema.tables WHERE table_name ILIKE '%bacia%' ORDER BY table_schema,table_name"); r.bacia_tables=t.rows; } catch(e){r.bacia_err=e.message;}
+    try { const h = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='hidrografia' ORDER BY table_name"); r.hidro_tables=h.rows.map(x=>x.table_name); } catch(e){r.hidro_err=e.message;}
+    res.json(r);
+});
+
+// Catch-all 404
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// Error middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`AdGain API server running on port ${port}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+});
