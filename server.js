@@ -842,60 +842,37 @@ app.post('/api/analises', async (req, res) => {
 
     if (codImoveisCar.length > 0) {
       const placeholders = codImoveisCar.map((_, i) => `$${i + 1}`).join(', ');
-      // geojsonStr é o parâmetro seguinte após os cod_imovel
-      const geomParam = `$${codImoveisCar.length + 1}`;
-      const geomExpr = `ST_SetSRID(ST_GeomFromGeoJSON(${geomParam}::jsonb->'geometry'), ${SRID})`;
 
-      // Usa ST_Area(ST_Intersection) para clipar os polígonos dentro da parcela selecionada
-      // Garante que o resultado nunca extrapole a área da parcela (fix: num_area podia somar duplicatas)
+      // Reserva Legal: busca num_area pelo cod_imovel exato (valor declarado no CAR)
       let reservaLegalResult = await safeQuery(`
-        SELECT ROUND(CAST(SUM(ST_Area(ST_Transform(ST_Intersection(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ${geomExpr}
-        ), 32721))) / 10000 AS numeric), 2) as area_ha
+        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
         FROM ${carReservaTable}
         WHERE cod_imovel IN (${placeholders})
-        AND ST_Intersects(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ${geomExpr}
-        )
-      `, [...codImoveisCar, geojsonStr]);
+      `, codImoveisCar);
 
       if (reservaLegalResult.rows[0] && reservaLegalResult.rows[0].area_ha) {
         analyses['9.13_car'].reserva_legal_hectares = parseFloat(reservaLegalResult.rows[0].area_ha);
       }
 
+      // Vegetação Nativa: busca num_area pelo cod_imovel exato
       let vegNativaResult = await safeQuery(`
-        SELECT ROUND(CAST(SUM(ST_Area(ST_Transform(ST_Intersection(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ${geomExpr}
-        ), 32721))) / 10000 AS numeric), 2) as area_ha
+        SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
         FROM ${carVegNativaTable}
         WHERE cod_imovel IN (${placeholders})
-        AND ST_Intersects(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ${geomExpr}
-        )
-      `, [...codImoveisCar, geojsonStr]);
+      `, codImoveisCar);
 
       if (vegNativaResult.rows[0] && vegNativaResult.rows[0].area_ha) {
         analyses['9.13_car'].vegetacao_nativa_hectares = parseFloat(vegNativaResult.rows[0].area_ha);
       }
 
+      // Área Consolidada: busca num_area pelo cod_imovel exato
       let areaConsolidadaResult;
       try {
         areaConsolidadaResult = await pool.query(`
-          SELECT ROUND(CAST(SUM(ST_Area(ST_Transform(ST_Intersection(
-            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-            ${geomExpr}
-          ), 32721))) / 10000 AS numeric), 2) as area_ha
+          SELECT ROUND(CAST(SUM(CAST(num_area AS numeric)) AS numeric), 2) as area_ha
           FROM ${carAreaConsolidadaTable}
           WHERE cod_imovel IN (${placeholders})
-          AND ST_Intersects(
-            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-            ${geomExpr}
-          )
-        `, [...codImoveisCar, geojsonStr]);
+        `, codImoveisCar);
       } catch (e) {
         console.error('[DEBUG] areaConsolidada ERRO:', e.message, '| tabela:', carAreaConsolidadaTable);
         areaConsolidadaResult = { rows: [] };
