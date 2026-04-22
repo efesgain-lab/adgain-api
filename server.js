@@ -1444,6 +1444,31 @@ app.get('/api/test-bacia', async (req, res) => {
 });
 // Endpoint diagnostico: lista schemas e tabelas bacia
 // Diagnóstico: num_area de reserva_legal por cod_imovel
+// Diagnóstico: tamanho das tabelas CAR por prefixo em todos os estados
+app.get('/api/car-table-sizes', async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT
+        table_schema || '.' || table_name AS tabela,
+        pg_size_pretty(pg_total_relation_size(quote_ident(table_schema)||'.'||quote_ident(table_name))) AS tamanho_total,
+        pg_size_pretty(pg_relation_size(quote_ident(table_schema)||'.'||quote_ident(table_name))) AS tamanho_dados,
+        pg_size_pretty(pg_indexes_size(quote_ident(table_schema)||'.'||quote_ident(table_name))) AS tamanho_indices,
+        (SELECT reltuples::bigint FROM pg_class WHERE relname = table_name) AS linhas_estimadas
+      FROM information_schema.tables
+      WHERE table_schema = 'car'
+        AND (table_name LIKE 'reserva_legal_%'
+          OR table_name LIKE 'vegetacao_nativa_%'
+          OR table_name LIKE 'area_consolidada_%')
+      ORDER BY pg_total_relation_size(quote_ident(table_schema)||'.'||quote_ident(table_name)) DESC
+    `);
+    const total = r.rows.reduce((s, x) => {
+      const bytes = parseInt(x.tamanho_total);
+      return s;
+    }, 0);
+    res.json({ tabelas: r.rows, total_tabelas: r.rows.length });
+  } catch(e) { res.json({ error: e.message }); }
+});
+
 app.get('/api/test-reserva', async (req, res) => {
   const cod = req.query.cod || 'AP-1600105-B80400C38AC04BB3AA90346BF37DFAEC';
   const uf = cod.substring(0, 2).toLowerCase();
