@@ -1066,7 +1066,7 @@ app.post('/api/analises', async (req, res) => {
 
     // Fraturas — SRID 4674
     let geolLinhaFraturaResult = await safeQuery(`
-      SELECT cd_fcim, classif, forma
+      SELECT cd_fcim, classif, forma, mergulho
       FROM geologia_litologia.geol_linha_fratura
       WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
