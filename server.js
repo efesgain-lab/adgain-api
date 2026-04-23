@@ -252,10 +252,67 @@ function haversineKm(lat1, lon1, lat2, lon2) {
  */
 async function fetchPluviometriaANA(lat, lng) {
   const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const MAX_STATIONS = 5;
+  const MAX_DIST_KM  = 150;
+
+  // ── helper: fetch series for one station, return monthly averages ──
+  async function fetchStationData(stationCode, stationName, dist) {
+    const now = new Date();
+    const tenYearsAgo = new Date(now);
+    tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
+    const chunks = [];
+    let cur = new Date(tenYearsAgo);
+    while (cur < now) {
+      const end = new Date(cur); end.setDate(end.getDate() + 364);
+      if (end > now) end.setTime(now.getTime());
+      chunks.push({ start: cur.toISOString().split('T')[0], end: end.toISOString().split('T')[0] });
+      cur = new Date(end); cur.setDate(cur.getDate() + 1);
+    }
+    const allRows = [];
+    for (const chunk of chunks) {
+      try {
+        const series = await anaGet('HidroSerieChuva/v1', {
+          codigoEstacao: stationCode, dataInicio: chunk.start, dataFim: chunk.end,
+        });
+        const rows = series?.items || series?.chuvas || series?.value || series;
+        if (Array.isArray(rows)) allRows.push(...rows);
+      } catch (e) {
+        console.warn(`[ANA] ${stationCode} bloco ${chunk.start} falhou: ${e.message}`);
+      }
+    }
+    if (allRows.length === 0) return null;
+    // aggregate to year-month totals
+    const ym = {};
+    for (const r of allRows) {
+      const ds = r.dataHora || r.data || r.date || r.DT_MEDICAO || r.DataHora || '';
+      const v  = parseFloat(r.chuvaTotal || r.chuva || r.value || r.CHUVA || r.Chuva || 0);
+      const d  = new Date(ds);
+      if (isNaN(d.getTime()) || d.getFullYear() < 2000) continue;
+      const k = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      ym[k] = (ym[k] || 0) + (isNaN(v) ? 0 : v);
+    }
+    // monthly averages (1-12)
+    const buckets = {};
+    for (const [k, t] of Object.entries(ym)) {
+      const m = parseInt(k.split('-')[1]);
+      buckets[m] = buckets[m] || []; buckets[m].push(t);
+    }
+    const monthAvg = Array.from({length:12}, (_,i) => {
+      const vals = buckets[i+1] || [];
+      return vals.length > 0 ? vals.reduce((s,v)=>s+v,0)/vals.length : null;
+    });
+    // annual totals
+    const ytMap = {};
+    for (const [k,t] of Object.entries(ym)) {
+      const y = k.split('-')[0]; ytMap[y] = (ytMap[y]||0) + t;
+    }
+    return { stationCode, stationName, dist, monthAvg, ytMap };
+  }
+
   try {
-    const delta = 1.5;
+    // ── 1. Inventário de estações pluviométricas próximas ──
+    const delta = 2.0;
     let stations = [];
-    let inventoryError = null;
     try {
       const inv = await anaGet('HidroInventarioEstacoes/v1', {
         tipoEstacao: '2',
@@ -268,112 +325,95 @@ async function fetchPluviometriaANA(lat, lng) {
       if (Array.isArray(raw)) stations = raw;
       else if (raw && typeof raw === 'object') stations = Object.values(raw);
     } catch (e) {
-      inventoryError = e.message;
-      console.warn('[ANA] Inventário com bbox falhou:', e.message, '— tentando sem bbox');
+      console.warn('[ANA] Inventário com bbox falhou:', e.message, '— sem bbox');
       try {
         const inv2 = await anaGet('HidroInventarioEstacoes/v1', { tipoEstacao: '2' });
         const raw2 = inv2?.items || inv2?.value || inv2?.estacoes || inv2;
         if (Array.isArray(raw2)) stations = raw2;
         else if (raw2 && typeof raw2 === 'object') stations = Object.values(raw2);
-      } catch (e2) {
-        console.warn('[ANA] Inventário sem bbox também falhou:', e2.message);
-      }
+      } catch (e2) { console.warn('[ANA] Inventário sem bbox falhou:', e2.message); }
     }
     if (stations.length === 0) {
-      return { pendente: false, erro: `Nenhuma estação pluviométrica ANA encontrada${inventoryError ? ': ' + inventoryError : ''}`, resumo: null, media_mensal: [], total_anual: [] };
+      return { pendente: false, erro: 'Nenhuma estação pluviométrica ANA encontrada', resumo: null, media_mensal: [], total_anual: [] };
     }
-    const withDist = stations
+
+    // ── 2. Selecionar até MAX_STATIONS estações dentro de MAX_DIST_KM ──
+    const candidates = stations
       .map(s => {
         const sLat = parseFloat(s.latitude  || s.lat  || s.Latitude  || s.LAT || 0);
         const sLng = parseFloat(s.longitude || s.lon  || s.Longitude || s.LON || 0);
-        return { ...s, _lat: sLat, _lng: sLng, _dist: haversineKm(lat, lng, sLat, sLng) };
+        const code = String(s.codigoEstacao || s.codigo || s.Codigo || s.code || '');
+        const name = s.nomeEstacao || s.nome || s.Nome || code;
+        return { code, name, lat: sLat, lng: sLng, dist: haversineKm(lat, lng, sLat, sLng) };
       })
-      .filter(s => s._dist <= 200)
-      .sort((a, b) => a._dist - b._dist);
-    if (withDist.length === 0) {
-      return { pendente: false, erro: 'Nenhuma estação pluviométrica ANA dentro de 200 km', resumo: null, media_mensal: [], total_anual: [] };
+      .filter(s => s.dist <= MAX_DIST_KM && s.code)
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, MAX_STATIONS);
+
+    if (candidates.length === 0) {
+      return { pendente: false, erro: `Nenhuma estação ANA dentro de ${MAX_DIST_KM} km`, resumo: null, media_mensal: [], total_anual: [] };
     }
-    const nearest     = withDist[0];
-    const stationCode = String(nearest.codigoEstacao || nearest.codigo || nearest.Codigo || nearest.code || '');
-    const stationName = nearest.nomeEstacao || nearest.nome || nearest.Nome || stationCode;
-    if (!stationCode) {
-      return { pendente: false, erro: 'Código da estação não identificado', resumo: null, media_mensal: [], total_anual: [] };
+
+    console.log(`[ANA] Usando ${candidates.length} estações para triangulação IDW`);
+    candidates.forEach(c => console.log(`  • ${c.code} (${c.name}) — ${c.dist.toFixed(1)} km`));
+
+    // ── 3. Buscar dados de todas as estações em paralelo ──
+    const results = await Promise.all(
+      candidates.map(c => fetchStationData(c.code, c.name, c.dist))
+    );
+    const valid = results.filter(r => r !== null);
+
+    if (valid.length === 0) {
+      return { pendente: false, erro: 'Nenhuma estação retornou dados de chuva nos últimos 10 anos', resumo: null, media_mensal: [], total_anual: [] };
     }
-    console.log(`[ANA] Estação: ${stationCode} (${stationName}), ${nearest._dist.toFixed(1)} km`);
-    const now = new Date();
-    const tenYearsAgo = new Date(now);
-    tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
-    const chunks = [];
-    let chunkStart = new Date(tenYearsAgo);
-    while (chunkStart < now) {
-      const chunkEnd = new Date(chunkStart);
-      chunkEnd.setDate(chunkEnd.getDate() + 364);
-      if (chunkEnd > now) chunkEnd.setTime(now.getTime());
-      chunks.push({ start: chunkStart.toISOString().split('T')[0], end: chunkEnd.toISOString().split('T')[0] });
-      chunkStart = new Date(chunkEnd);
-      chunkStart.setDate(chunkStart.getDate() + 1);
-    }
-    const allRows = [];
-    for (const chunk of chunks) {
-      try {
-        const series = await anaGet('HidroSerieChuva/v1', {
-          codigoEstacao: stationCode,
-          dataInicio:    chunk.start,
-          dataFim:       chunk.end,
-        });
-        const rows = series?.items || series?.chuvas || series?.value || series;
-        if (Array.isArray(rows)) allRows.push(...rows);
-      } catch (e) {
-        console.warn(`[ANA] Bloco ${chunk.start}–${chunk.end} falhou:`, e.message);
-      }
-    }
-    if (allRows.length === 0) {
-      return { pendente: false, erro: `Estação ${stationCode} sem dados de chuva nos últimos 10 anos`, resumo: null, media_mensal: [], total_anual: [] };
-    }
-    const yearMonthTotals = {};
-    for (const r of allRows) {
-      const dateStr = r.dataHora || r.data || r.date || r.DT_MEDICAO || r.DataHora || '';
-      const val     = parseFloat(r.chuvaTotal || r.chuva || r.value || r.CHUVA || r.Chuva || 0);
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime()) || d.getFullYear() < 2000) continue;
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      yearMonthTotals[key] = (yearMonthTotals[key] || 0) + (isNaN(val) ? 0 : val);
-    }
-    const monthBuckets = {};
-    for (const [key, total] of Object.entries(yearMonthTotals)) {
-      const m = parseInt(key.split('-')[1]);
-      monthBuckets[m] = monthBuckets[m] || [];
-      monthBuckets[m].push(total);
-    }
-    const media_mensal = Array.from({ length: 12 }, (_, i) => {
-      const m    = i + 1;
-      const vals = monthBuckets[m] || [];
-      return { mes: MONTHS_PT[i], media_mm: vals.length > 0 ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : 0 };
+
+    // ── 4. IDW: peso = 1/dist² para interpolação no ponto da fazenda ──
+    const weights = valid.map(r => r.dist <= 0.1 ? 1e9 : 1 / (r.dist * r.dist));
+    const totalW  = weights.reduce((s, w) => s + w, 0);
+
+    // Média mensal IDW
+    const media_mensal = Array.from({length:12}, (_, i) => {
+      let num = 0, den = 0;
+      valid.forEach((r, j) => {
+        if (r.monthAvg[i] !== null) { num += weights[j] * r.monthAvg[i]; den += weights[j]; }
+      });
+      return { mes: MONTHS_PT[i], media_mm: den > 0 ? Math.round(num / den) : 0 };
     });
-    const yearTotals = {};
-    for (const [key, total] of Object.entries(yearMonthTotals)) {
-      const year = key.split('-')[0];
-      yearTotals[year] = (yearTotals[year] || 0) + total;
-    }
-    const total_anual = Object.entries(yearTotals)
-      .map(([ano, total_mm]) => ({ ano, total_mm: Math.round(total_mm) }))
-      .sort((a, b) => a.ano.localeCompare(b.ano));
-    const mediaAnualMm   = total_anual.length > 0 ? Math.round(total_anual.reduce((s, a) => s + a.total_mm, 0) / total_anual.length) : 0;
-    const mesMaisChuvoso = [...media_mensal].sort((a, b) => b.media_mm - a.media_mm)[0] || null;
-    const mesMaisSeco    = [...media_mensal].sort((a, b) => a.media_mm - b.media_mm)[0] || null;
+
+    // Total anual IDW (por ano)
+    const allYears = [...new Set(valid.flatMap(r => Object.keys(r.ytMap)))].sort();
+    const total_anual = allYears.map(ano => {
+      let num = 0, den = 0;
+      valid.forEach((r, j) => {
+        if (r.ytMap[ano] != null) { num += weights[j] * r.ytMap[ano]; den += weights[j]; }
+      });
+      return { ano, total_mm: den > 0 ? Math.round(num / den) : 0 };
+    });
+
+    const mediaAnualMm   = total_anual.length > 0
+      ? Math.round(total_anual.reduce((s,a) => s + a.total_mm, 0) / total_anual.length) : 0;
+    const mesMaisChuvoso = [...media_mensal].sort((a,b) => b.media_mm - a.media_mm)[0] || null;
+    const mesMaisSeco    = [...media_mensal].sort((a,b) => a.media_mm - b.media_mm)[0] || null;
+
+    const stationsDesc = valid
+      .map(r => `${r.stationName} (${r.dist.toFixed(0)} km)`)
+      .join(', ');
+
     return {
       pendente: false, erro: null,
       resumo: {
         media_anual_mm:   mediaAnualMm,
         mes_mais_chuvoso: mesMaisChuvoso,
         mes_mais_seco:    mesMaisSeco,
-        fonte:      `${stationName} (cód. ${stationCode}) — ${nearest._dist.toFixed(0)} km`,
-        latitude:   nearest._lat.toFixed(4),
-        longitude:  nearest._lng.toFixed(4),
+        fonte:            `IDW ${valid.length} estações ANA: ${stationsDesc}`,
+        estacoes_usadas:  valid.length,
+        latitude:         lat.toFixed(4),
+        longitude:        lng.toFixed(4),
       },
       media_mensal,
       total_anual,
     };
+
   } catch (e) {
     console.error('[ANA] fetchPluviometriaANA error:', e.message);
     return { pendente: false, erro: `Erro ANA HidroWeb: ${e.message}`, resumo: null, media_mensal: [], total_anual: [] };
