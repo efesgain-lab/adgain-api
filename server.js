@@ -273,7 +273,15 @@ async function fetchPluviometriaANA(lat, lng) {
         const series = await anaGet('HidroSerieChuva/v1', {
           codigoEstacao: stationCode, dataInicio: chunk.start, dataFim: chunk.end,
         });
-        const rows = series?.items || series?.chuvas || series?.value || series;
+        const rows = series?.items
+          || series?.chuvas
+          || series?.value
+          || series?.Registro
+          || series?.registro
+          || series?.HidroSerieChuva?.Registro
+          || series?.HidroSerieChuva?.registro
+          || (series?.HidroSerieChuva && Object.values(series.HidroSerieChuva).find(v => Array.isArray(v)))
+          || series;
         if (Array.isArray(rows)) allRows.push(...rows);
       } catch (e) {
         console.warn(`[ANA] ${stationCode} bloco ${chunk.start} falhou: ${e.message}`);
@@ -320,14 +328,32 @@ async function fetchPluviometriaANA(lat, lng) {
         longitudeMinima: (lng - delta).toFixed(4),
         longitudeMaxima: (lng + delta).toFixed(4),
       });
-      const raw = inv?.items || inv?.value || inv?.estacoes || inv;
+      const raw = inv?.items
+        || inv?.value
+        || inv?.estacoes
+        || inv?.Estacao
+        || inv?.estacao
+        || inv?.HidroInventarioEstacoes?.Estacao
+        || inv?.HidroInventarioEstacoes?.estacao
+        || (inv?.HidroInventarioEstacoes && Object.values(inv.HidroInventarioEstacoes).find(v => Array.isArray(v)))
+        || inv;
+      console.log('[ANA] inv keys:', inv && typeof inv === 'object' ? Object.keys(inv).join(',') : String(inv).slice(0,100));
       if (Array.isArray(raw)) stations = raw;
       else if (raw && typeof raw === 'object') stations = Object.values(raw);
     } catch (e) {
       console.warn('[ANA] Inventário com bbox falhou:', e.message, '— sem bbox');
       try {
         const inv2 = await anaGet('HidroInventarioEstacoes/v1', { tipoEstacao: '2' });
-        const raw2 = inv2?.items || inv2?.value || inv2?.estacoes || inv2;
+        const raw2 = inv2?.items
+          || inv2?.value
+          || inv2?.estacoes
+          || inv2?.Estacao
+          || inv2?.estacao
+          || inv2?.HidroInventarioEstacoes?.Estacao
+          || inv2?.HidroInventarioEstacoes?.estacao
+          || (inv2?.HidroInventarioEstacoes && Object.values(inv2.HidroInventarioEstacoes).find(v => Array.isArray(v)))
+          || inv2;
+        console.log('[ANA] inv2 keys:', inv2 && typeof inv2 === 'object' ? Object.keys(inv2).join(',') : String(inv2).slice(0,100));
         if (Array.isArray(raw2)) stations = raw2;
         else if (raw2 && typeof raw2 === 'object') stations = Object.values(raw2);
       } catch (e2) { console.warn('[ANA] Inventário sem bbox falhou:', e2.message); }
