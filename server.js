@@ -1551,6 +1551,26 @@ app.get('/api/test-geologia', async (req, res) => {
 
   res.json(r);
 });
+app.get('/api/test-geol-parcela', async (req, res) => {
+    const id = req.query.id || '9f6b9aa6-9a3f-451b-b6df-6c03fef1d786';
+    try {
+          const pr = await pool.query('SELECT ST_AsGeoJSON(geom) as g FROM incra.sigef_ap WHERE parcela_co=$1 LIMIT 1', [id]);
+          if (!pr.rows[0]) return res.json({ error: 'parcela nao encontrada', id });
+          const geojsonStr = JSON.stringify({ type:'Feature', geometry: JSON.parse(pr.rows[0].g), properties:{} });
+          const result = { parcelaId: id };
+          const qs = {
+                  pontos:   `SELECT COUNT(*) n FROM geologia_litologia.geol_ponto WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+                  falhas:   `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_falha WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+                  dobras:   `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_dobra WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+                  fraturas: `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_fratura WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+          };
+          for (const [k, sql] of Object.entries(qs)) {
+                  try { const q = await pool.query(sql, [geojsonStr]); result[k] = parseInt(q.rows[0].n); }
+                  catch (e) { result[k + '_err'] = e.message; }
+          }
+          res.json(result);
+    } catch (e) { res.json({ error: e.message }); }
+});
 
 // Catch-all 404
 app.use((req, res) => {
