@@ -182,6 +182,234 @@ function buildAreaPercentQuery(table, geomColumn, expectedSrid = 4674) {
   `;
 }
 
+// ============================================================================
+// ANA HidroWebservice Integration
+// Token auth with 55-min cache to avoid IP-block from excessive auth requests
+// ============================================================================
+const ANA_BASE = 'https://www.ana.gov.br/hidrowebservice/EstacoesTelemtricas';
+const ANA_IDENTIFICADOR = process.env.ANA_IDENTIFICADOR || '07639595000179';
+const ANA_SENHA = process.env.ANA_SENHA || 'erk1gqsk';
+const _anaToken = { value: null, expiresAt: 0 };
+
+async function getAnaToken() {
+  if (_anaToken.value && Date.now() < _anaToken.expiresAt) return _anaToken.value;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const resp = await fetch(`${ANA_BASE}/OAUth/v1`, {
+      headers: { 'Identificador': ANA_IDENTIFICADOR, 'Senha': ANA_SENHA, 'Accept': 'application/json' },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error(`ANA auth HTTP ${resp.status}`);
+    const data = await resp.json();
+    const token = data?.tokenautenticacao || data?.token || data?.access_token
+      || (Array.isArray(data) && data[0]?.tokenautenticacao);
+    if (!token) throw new Error(`ANA token field not found — keys: ${Object.keys(data || {}).join(',')}`);
+    _anaToken.value = token;
+    _anaToken.expiresAt = Date.now() + 55 * 60 * 1000;
+    console.log('[ANA] Token obtained, valid 55 min');
+    return token;
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
+async function anaGet(path, params = {}) {
+  const token = await getAnaToken();
+  const qs = new URLSearchParams(params).toString();
+  const url = `${ANA_BASE}/${path}${qs ? '?' + qs : ''}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const resp = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error(`ANA ${path} HTTP ${resp.status}`);
+    return resp.json();
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
+/** Haversine distance in km */
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Fetches pluviometric data from ANA HidroWebservice for a given centroid.
+ * Finds nearest conventional rainfall station within ±1.5° bounding box,
+ * fetches 10 years of daily data and aggregates into monthly averages + annual totals.
+ * Never throws — returns error object on failure.
+ */
+async function fetchPluviometriaANA(lat, lng) {
+  const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  try {
+    const delta = 1.5;
+    let stations = [];
+    let inventoryError = null;
+
+    try {
+      const inv = await anaGet('HidroInventarioEstacoes/v1', {
+        tipoEstacao: '2',
+        latitudeMinima: (lat - delta).toFixed(4),
+        latitudeMaxima: (lat + delta).toFixed(4),
+        longitudeMinima: (lng - delta).toFixed(4),
+        longitudeMaxima: (lng + delta).toFixed(4),
+      });
+      const raw = inv?.items || inv?.value || inv?.estacoes || inv;
+      if (Array.isArray(raw)) stations = raw;
+      else if (raw && typeof raw === 'object') stations = Object.values(raw);
+    } catch (e) {
+      inventoryError = e.message;
+      console.warn('[ANA] Inventory with bbox failed:', e.message, '— trying without bbox');
+      try {
+        const inv2 = await anaGet('HidroInventarioEstacoes/v1', { tipoEstacao: '2' });
+        const raw2 = inv2?.items || inv2?.value || inv2?.estacoes || inv2;
+        if (Array.isArray(raw2)) stations = raw2;
+        else if (raw2 && typeof raw2 === 'object') stations = Object.values(raw2);
+      } catch (e2) {
+        console.warn('[ANA] Inventory without bbox also failed:', e2.message);
+      }
+    }
+
+    if (stations.length === 0) {
+      return { pendente: false, erro: `Nenhuma estação pluviométrica encontrada${inventoryError ? ': ' + inventoryError : ''}`, resumo: null, media_mensal: [], total_anual: [] };
+    }
+
+    const withDist = stations
+      .map(s => {
+        const sLat = parseFloat(s.latitude || s.lat || s.Latitude || s.LAT || 0);
+        const sLng = parseFloat(s.longitude || s.lon || s.Longitude || s.LON || 0);
+        return { ...s, _lat: sLat, _lng: sLng, _dist: haversineKm(lat, lng, sLat, sLng) };
+      })
+      .filter(s => s._dist <= 200)
+      .sort((a, b) => a._dist - b._dist);
+
+    if (withDist.length === 0) {
+      return { pendente: false, erro: 'Nenhuma estação pluviométrica dentro de 200 km', resumo: null, media_mensal: [], total_anual: [] };
+    }
+
+    const nearest = withDist[0];
+    const stationCode = String(nearest.codigoEstacao || nearest.codigo || nearest.Codigo || nearest.code || '');
+    const stationName = nearest.nomeEstacao || nearest.nome || nearest.Nome || stationCode;
+
+    if (!stationCode) {
+      return { pendente: false, erro: 'Código da estação mais próxima não identificado', resumo: null, media_mensal: [], total_anual: [] };
+    }
+
+    console.log(`[ANA] Nearest station: ${stationCode} (${stationName}), ${nearest._dist.toFixed(1)} km away`);
+
+    const now = new Date();
+    const tenYearsAgo = new Date(now);
+    tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
+
+    const chunks = [];
+    let chunkStart = new Date(tenYearsAgo);
+    while (chunkStart < now) {
+      const chunkEnd = new Date(chunkStart);
+      chunkEnd.setDate(chunkEnd.getDate() + 364);
+      if (chunkEnd > now) chunkEnd.setTime(now.getTime());
+      chunks.push({
+        start: chunkStart.toISOString().split('T')[0],
+        end:   chunkEnd.toISOString().split('T')[0],
+      });
+      chunkStart = new Date(chunkEnd);
+      chunkStart.setDate(chunkStart.getDate() + 1);
+    }
+
+    const allRows = [];
+    for (const chunk of chunks) {
+      try {
+        const series = await anaGet('HidroSeriesChuva/v1', {
+          codigoEstacao: stationCode,
+          dataInicio: chunk.start,
+          dataFim: chunk.end,
+        });
+        const rows = series?.items || series?.chuvas || series?.value || series;
+        if (Array.isArray(rows)) allRows.push(...rows);
+      } catch (e) {
+        console.warn(`[ANA] Chunk ${chunk.start}–${chunk.end} failed:`, e.message);
+      }
+    }
+
+    if (allRows.length === 0) {
+      return {
+        pendente: false,
+        erro: `Estação ${stationCode} (${stationName}) sem dados de chuva nos últimos 10 anos`,
+        resumo: null, media_mensal: [], total_anual: [],
+      };
+    }
+
+    const yearMonthTotals = {};
+    for (const r of allRows) {
+      const dateStr = r.dataHora || r.data || r.date || r.DT_MEDICAO || r.DataHora || '';
+      const val = parseFloat(r.chuvaTotal || r.chuva || r.value || r.CHUVA || r.Chuva || 0);
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime()) || d.getFullYear() < 2000) continue;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      yearMonthTotals[key] = (yearMonthTotals[key] || 0) + (isNaN(val) ? 0 : val);
+    }
+
+    const monthBuckets = {};
+    for (const [key, total] of Object.entries(yearMonthTotals)) {
+      const m = parseInt(key.split('-')[1]);
+      monthBuckets[m] = monthBuckets[m] || [];
+      monthBuckets[m].push(total);
+    }
+    const media_mensal = Array.from({ length: 12 }, (_, i) => {
+      const m = i + 1;
+      const vals = monthBuckets[m] || [];
+      return {
+        mes: MONTHS_PT[i],
+        media_mm: vals.length > 0 ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : 0,
+      };
+    });
+
+    const yearTotals = {};
+    for (const [key, total] of Object.entries(yearMonthTotals)) {
+      const year = key.split('-')[0];
+      yearTotals[year] = (yearTotals[year] || 0) + total;
+    }
+    const total_anual = Object.entries(yearTotals)
+      .map(([ano, total_mm]) => ({ ano, total_mm: Math.round(total_mm) }))
+      .sort((a, b) => a.ano.localeCompare(b.ano));
+
+    const mediaAnualMm = total_anual.length > 0
+      ? Math.round(total_anual.reduce((s, a) => s + a.total_mm, 0) / total_anual.length)
+      : 0;
+    const mesMaisChuvoso = [...media_mensal].sort((a, b) => b.media_mm - a.media_mm)[0] || null;
+    const mesMaisSeco    = [...media_mensal].sort((a, b) => a.media_mm - b.media_mm)[0] || null;
+
+    return {
+      pendente: false,
+      erro: null,
+      resumo: {
+        media_anual_mm: mediaAnualMm,
+        mes_mais_chuvoso: mesMaisChuvoso,
+        mes_mais_seco: mesMaisSeco,
+        fonte: `${stationName} (cód. ${stationCode}) — ${nearest._dist.toFixed(0)} km`,
+        latitude: nearest._lat.toFixed(4),
+        longitude: nearest._lng.toFixed(4),
+      },
+      media_mensal,
+      total_anual,
+    };
+
+  } catch (e) {
+    console.error('[ANA] fetchPluviometriaANA error:', e.message);
+    return { pendente: false, erro: `Erro ANA HidroWeb: ${e.message}`, resumo: null, media_mensal: [], total_anual: [] };
+  }
+}
+
 /**
  * Safely parse GeoJSON feature
  */
@@ -1124,6 +1352,21 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.suture_zones = sutureResult.rows;
 
+    // 9.15 Pluviometria — ANA HidroWebservice
+    // Extract centroid lat/lng for station lookup (centroid parsed later too)
+    let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', resumo: null, media_mensal: [], total_anual: [] };
+    try {
+      const centroidForPluvio = municipio.centroid ? JSON.parse(municipio.centroid) : null;
+      if (centroidForPluvio) {
+        const pluvioLat = centroidForPluvio.coordinates[1];
+        const pluvioLng = centroidForPluvio.coordinates[0];
+        pluviometria = await fetchPluviometriaANA(pluvioLat, pluvioLng);
+      }
+    } catch (e) {
+      console.warn('[ANA] Pluviometria block error:', e.message);
+      pluviometria = { pendente: false, erro: `Erro interno pluviometria: ${e.message}`, resumo: null, media_mensal: [], total_anual: [] };
+    }
+
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
     const centroidParsed = municipio.centroid ? JSON.parse(municipio.centroid) : null;
     const resultados = {
@@ -1177,6 +1420,7 @@ app.post('/api/analises', async (req, res) => {
       },
       aquiferos: analyses['9.13b_aquiferos'].data,
       analises_adicionais: analyses['9.14_analises_adicionais'],
+      pluviometria,
       municipio:  { NM_MUN: municipio.municipio, SIGLA_UF: municipio.uf, CD_MUN: '' },
       municipios: [{ nm_mun: municipio.municipio, sigla_uf: municipio.uf }],
       centroide:  centroidParsed ? { lat: centroidParsed.coordinates[1], lng: centroidParsed.coordinates[0] } : { lat: 0, lng: 0 },
