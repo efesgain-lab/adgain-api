@@ -1270,7 +1270,8 @@ app.get('/api/camadas/:camada', async (req, res) => {
         queryTargets = ufs.flatMap(u => [
           safeQuery(
             `SELECT ${sigefCfg.idCol}, ${sigefCfg.labelCol} as label, 'sigef' as source,
-               ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as               ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
+               ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
+               ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
              FROM ${sigefCfg.schema}.${sigefCfg.prefix}_${u}
              WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
              ORDER BY dist_center ASC LIMIT ${limitPerState}`,
