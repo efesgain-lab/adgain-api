@@ -186,7 +186,7 @@ function buildAreaPercentQuery(table, geomColumn, expectedSrid = 4674) {
 // ANA HidroWebservice Integration
 // Token auth with 55-min cache to avoid IP-block from excessive auth requests
 // ============================================================================
-const ANA_BASE = 'https://www.ana.gov.br/hidrowebservice/EstacoesTelemtricas';
+const ANA_BASE = 'https://www.ana.gov.br/hidrowebservice/EstacoesTelemetricas';
 const ANA_IDENTIFICADOR = process.env.ANA_IDENTIFICADOR || '07639595000179';
 const ANA_SENHA = process.env.ANA_SENHA || 'erk1gqsk';
 const _anaToken = { value: null, expiresAt: 0 };
@@ -387,7 +387,7 @@ async function fetchPluviometriaANA(lat, lng) {
           const allRows = [];
           for (const chunk of chunks) {
             try {
-              const series = await anaGet('HidroSeriesChuva/v1', { codigoEstacao: stationCode, dataInicio: chunk.start, dataFim: chunk.end });
+              const series = await anaGet('HidroSerieChuva/v1', { codigoEstacao: stationCode, dataInicio: chunk.start, dataFim: chunk.end });
               const rows = series?.items || series?.chuvas || series?.value || series;
               if (Array.isArray(rows)) allRows.push(...rows);
             } catch (_) {}
