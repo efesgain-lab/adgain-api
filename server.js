@@ -424,6 +424,16 @@ async function fetchPluviometriaANA(lat, lng) {
   return { pendente: false, erro: 'Dados pluviométricos não disponíveis (Open-Meteo e ANA falharam)', resumo: null, media_mensal: [], total_anual: [] };
 }
 
+
+/**
+ * Safely parse GeoJSON feature
+ */
+function parseGeoJSONFeature(geojson) {
+  if (typeof geojson === 'string') {
+    return JSON.parse(geojson);
+  }
+  return geojson;
+}
 // ============================================================================
 // ENDPOINTS
 // ============================================================================
