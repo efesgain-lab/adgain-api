@@ -252,8 +252,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
  */
 async function fetchPluviometriaANA(lat, lng) {
   const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const MAX_STATIONS = 5;
-  const MAX_DIST_KM  = 150;
+  const MAX_DIST_KM  = 600;
 
   // ── helper: fetch series for one station, return monthly averages ──
   async function fetchStationData(stationCode, stationName, dist) {
@@ -311,7 +310,7 @@ async function fetchPluviometriaANA(lat, lng) {
 
   try {
     // ── 1. Inventário de estações pluviométricas próximas ──
-    const delta = 2.0;
+    const delta = 6.0;
     let stations = [];
     try {
       const inv = await anaGet('HidroInventarioEstacoes/v1', {
@@ -337,7 +336,7 @@ async function fetchPluviometriaANA(lat, lng) {
       return { pendente: false, erro: 'Nenhuma estação pluviométrica ANA encontrada', resumo: null, media_mensal: [], total_anual: [] };
     }
 
-    // ── 2. Selecionar até MAX_STATIONS estações dentro de MAX_DIST_KM ──
+    // ── 2. Selecionar todas as estações dentro de MAX_DIST_KM ──
     const candidates = stations
       .map(s => {
         const sLat = parseFloat(s.latitude  || s.lat  || s.Latitude  || s.LAT || 0);
@@ -347,8 +346,7 @@ async function fetchPluviometriaANA(lat, lng) {
         return { code, name, lat: sLat, lng: sLng, dist: haversineKm(lat, lng, sLat, sLng) };
       })
       .filter(s => s.dist <= MAX_DIST_KM && s.code)
-      .sort((a, b) => a.dist - b.dist)
-      .slice(0, MAX_STATIONS);
+      .sort((a, b) => a.dist - b.dist);
 
     if (candidates.length === 0) {
       return { pendente: false, erro: `Nenhuma estação ANA dentro de ${MAX_DIST_KM} km`, resumo: null, media_mensal: [], total_anual: [] };
