@@ -117,7 +117,7 @@ async function getUFFromGeoJSON(geojsonStr) {
     const result = await pool.query(`
       SELECT LOWER(m."SIGLA_UF") as uf_lower
       FROM municipios.municipios_2024 m
-      WHERE ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE m.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       LIMIT 1
     `, [geojsonStr]);
     return result.rows[0]?.uf_lower || null;
@@ -176,7 +176,7 @@ function buildAreaPercentQuery(table, geomColumn, expectedSrid = 4674) {
       ROUND(CAST(SUM(ST_Area(ST_Intersection(${safeGeom}, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)))) /
                      ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as percentual
     FROM ${table}
-    WHERE ST_Intersects(${safeGeom}, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+    WHERE ${safeGeom} && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(${safeGeom}, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     GROUP BY nome
     ORDER BY percentual DESC
   `;
@@ -607,7 +607,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable}
-        WHERE ST_Intersects(
+        WHERE geom && ST_GeomFromText($1) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_GeomFromText($1)
         )
@@ -625,7 +625,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
             ST_AsGeoJSON(geom) as geojson,
             ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
           FROM ${snciTable}
-          WHERE ST_Intersects(
+          WHERE geom && ST_GeomFromText($1) AND ST_Intersects(
             CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
             ST_GeomFromText($1)
           )
@@ -645,7 +645,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${carTable}
-        WHERE ST_Intersects(
+        WHERE geom && ST_GeomFromText($1) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_GeomFromText($1)
         )
@@ -699,7 +699,7 @@ app.post('/api/analises', async (req, res) => {
         ST_AsGeoJSON(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as centroid,
         ROUND(CAST(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM municipios.municipios_2024 m
-      WHERE ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE m.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       ORDER BY ST_Area(ST_Intersection(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) DESC
       LIMIT 1
     `, [geojsonStr]);
@@ -790,7 +790,7 @@ app.post('/api/analises', async (req, res) => {
           t.registro_d::text as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable} t
-        WHERE ST_Intersects(
+        WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
@@ -810,7 +810,7 @@ app.post('/api/analises', async (req, res) => {
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${snciTable} t
-        WHERE ST_Intersects(
+        WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
@@ -832,7 +832,7 @@ app.post('/api/analises', async (req, res) => {
           t.registro_d::text as registro_d,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable} t
-        WHERE ST_Intersects(
+        WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
@@ -855,7 +855,7 @@ app.post('/api/analises', async (req, res) => {
           t.qtd_area_p,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${snciTable} t
-        WHERE ST_Intersects(
+        WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) = 0 THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
         )
@@ -900,7 +900,7 @@ app.post('/api/analises', async (req, res) => {
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         ))) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as percentual
       FROM solo.pedo_area
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -917,7 +917,7 @@ app.post('/api/analises', async (req, res) => {
         SELECT "Bioma" as nome,
                ST_Union(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END) as geom
         FROM bioma.bioma_250
-        WHERE ST_Intersects(
+        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         )
@@ -955,7 +955,7 @@ app.post('/api/analises', async (req, res) => {
           ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100
         AS numeric), 2) as percentual
       FROM geologia_litologia.litoestratigafia_br
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -984,7 +984,7 @@ app.post('/api/analises', async (req, res) => {
         "NOME"      as titular,
         "SUBS"      as substancia
       FROM ${anmProcessoTable}
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -1003,7 +1003,7 @@ app.post('/api/analises', async (req, res) => {
     let embargosResult = await safeQuery(`
       SELECT id, num_auto_i as auto_numero, nome_embar, cpf_cnpj_e, nome_imove, dat_embarg, qtd_area_e, des_infrac, des_tad, sit_desmat as situacao
       FROM embargos.embargos_ibama
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -1019,7 +1019,7 @@ app.post('/api/analises', async (req, res) => {
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         )) / 10000 AS numeric), 2) as area_hectares
       FROM terra_indigena.tis_poligonais
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -1041,7 +1041,7 @@ app.post('/api/analises', async (req, res) => {
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         )) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as sobreposicao_percentual
       FROM unidade_conservacao.unidade_conserv
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -1058,7 +1058,7 @@ app.post('/api/analises', async (req, res) => {
         const r = await pool.query(`
           SELECT nome_bacia, curso_prin, princ_aflu, sub_bacias, suprabacia, ${nivel} as nivel
           FROM bacias_hidrograficas.bacias_nivel_${nivel}
-          WHERE ST_Intersects(
+          WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
             CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
           )
@@ -1075,7 +1075,7 @@ app.post('/api/analises', async (req, res) => {
     let cursosResult = await safeQuery(`
       SELECT COUNT(*) as total
       FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -1091,14 +1091,14 @@ app.post('/api/analises', async (req, res) => {
       courses AS (
         SELECT MOD(degrees(ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom)))::numeric, 180::numeric) AS az
         FROM hidrografia.geoft_bho_2017_curso_dagua c, buffered b
-        WHERE ST_Intersects(c.geom, b.bg)
+        WHERE c.geom && b.bg AND ST_Intersects(c.geom, b.bg)
       )
       SELECT COUNT(*)::int AS total, COALESCE(ROUND(STDDEV(az)::numeric, 1), 0) AS std_az FROM courses
     `, [geojsonStr]);
     const compParcelRes = await safeQuery(`
       SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))::geography)), 0) AS len_m
       FROM hidrografia.geoft_bho_2017_curso_dagua c
-      WHERE ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE c.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     // Nomes de rios: hidrografia.rio_nomes (NORIOCOMP) — ST_DWithin 100m
     const nomesRes = await safeQuery(`
@@ -1115,7 +1115,7 @@ app.post('/api/analises', async (req, res) => {
     const ordensRes = await safeQuery(`
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
       FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       GROUP BY nuordemcda ORDER BY nuordemcda DESC
     `, [geojsonStr]);
     const totalRaio = parseInt(padraoAgg.rows[0]?.total || 0);
@@ -1225,7 +1225,7 @@ app.post('/api/analises', async (req, res) => {
           gid as id, cod_imovel, num_area, ind_tipo, ind_status, des_condic, dat_criaca, dat_atuali,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${carAreaTable}
-        WHERE ST_Intersects(
+        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         )
@@ -1268,7 +1268,7 @@ app.post('/api/analises', async (req, res) => {
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         ))) / 10000 AS numeric), 2) as area_hectares
       FROM ${carAppsTable}
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -1346,7 +1346,7 @@ app.post('/api/analises', async (req, res) => {
       SELECT tipo_aquife as tipo, sistema_aqu as sistema, dominio as dominio,
              descricao, area_km2 as area_sistema_km2
       FROM hidrogeologia.sistemas_aquiferos
-      WHERE ST_Intersects(
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
         ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
       )
@@ -1357,7 +1357,7 @@ app.post('/api/analises', async (req, res) => {
         SELECT tipo, sistema, dominio, descricao,
                ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 1000000 AS numeric), 3) as area_sistema_km2
         FROM hidrogeologia.aquiferos
-        WHERE ST_Intersects(
+        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
         )
@@ -1393,7 +1393,7 @@ app.post('/api/analises', async (req, res) => {
     let geolPontoResult = await safeQuery(`
       SELECT cd_fcim, ds_afl1, nm_unidade as nome, tipo_pto as tipo, fonte
       FROM geologia_litologia.geol_ponto
-      WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.pontos = geolPontoResult.rows;
     analyses['9.5_geologia'].pontos = geolPontoResult.rows.map(r => ({ cod_fcim: r.cd_fcim, ds_afl1: r.ds_afl1 }));
@@ -1402,7 +1402,7 @@ app.post('/api/analises', async (req, res) => {
     let ocorrenciasResult = await safeQuery(`
       SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras
       FROM geologia_litologia."ocorrências_br"
-      WHERE ST_Intersects(geom, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326))
+      WHERE geom && ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AND ST_Intersects(geom, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.ocorrencias = ocorrenciasResult.rows;
     analyses['9.5_geologia'].ocorrencias = ocorrenciasResult.rows;
@@ -1411,7 +1411,7 @@ app.post('/api/analises', async (req, res) => {
     let geolLinhaDbraResult = await safeQuery(`
       SELECT cd_fcim, classif, caract_eix, caime_eix
       FROM geologia_litologia.geol_linha_dobra
-      WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_dobra = geolLinhaDbraResult.rows;
     analyses['9.5_geologia'].dobras = geolLinhaDbraResult.rows;
@@ -1420,7 +1420,7 @@ app.post('/api/analises', async (req, res) => {
     let geolLinhaFalhaResult = await safeQuery(`
       SELECT cd_fcim, classif, forma, estm_merg, sentido
       FROM geologia_litologia.geol_linha_falha
-      WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_falha = geolLinhaFalhaResult.rows;
     analyses['9.5_geologia'].falhas = geolLinhaFalhaResult.rows;
@@ -1429,14 +1429,14 @@ app.post('/api/analises', async (req, res) => {
     let geolLinhaFraturaResult = await safeQuery(`
       SELECT cd_fcim, classif, forma, mergulho
       FROM geologia_litologia.geol_linha_fratura
-      WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_fratura = geolLinhaFraturaResult.rows;
     analyses['9.5_geologia'].fraturas = geolLinhaFraturaResult.rows;
 
     // Tectônicas — todas as tabelas do schema tectonic_map
     const tectonicGeoFilter = `ST_DWithin(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 1.0)`;
-    const tectonicGeoIntersect = `ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
+    const tectonicGeoIntersect = `geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
 
     const plateBoundaryResult = await safeQuery(`
       SELECT id, feature, type as tipo FROM tectonic_map.plate_boundary WHERE ${tectonicGeoFilter}
@@ -1665,7 +1665,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
                ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
                ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
              FROM ${sigefCfg.schema}.${sigefCfg.prefix}_${u}
-             WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             WHERE ${geomExpr} && ST_GeomFromText($1) AND ST_Intersects(${geomExpr}, ST_GeomFromText($1))
              ORDER BY dist_center ASC LIMIT ${limitPerState}`,
             [bboxWkt, centerLng, centerLat]
           ),
@@ -1674,7 +1674,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
                ST_AsGeoJSON(ST_Simplify(${geomExpr}, ${simplifyTol})) as geometry,
                ST_Distance(ST_Centroid(${geomExpr}), ST_SetSRID(ST_MakePoint($2, $3), ${SRID})) as dist_center
              FROM ${snciCfg.schema}.${snciCfg.prefix}_${u}
-             WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+             WHERE ${geomExpr} && ST_GeomFromText($1) AND ST_Intersects(${geomExpr}, ST_GeomFromText($1))
              ORDER BY dist_center ASC LIMIT ${limitPerState}`,
             [bboxWkt, centerLng, centerLat]
           ),
@@ -1688,7 +1688,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
                ST_SetSRID(ST_MakePoint($2, $3), ${SRID})
              ) as dist_center
            FROM ${cfg.schema}.${cfg.prefix}_${u}
-           WHERE ST_Intersects(${geomExpr}, ST_GeomFromText($1))
+           WHERE ${geomExpr} && ST_GeomFromText($1) AND ST_Intersects(${geomExpr}, ST_GeomFromText($1))
              ${extraFilter}
            ORDER BY dist_center ASC
            LIMIT ${limitPerState}`,
@@ -1724,7 +1724,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
         SELECT ${idCol}, ${labelCol} as label,
           ST_AsGeoJSON(ST_Simplify(${geomExpr}, 0.001)) as geometry
         FROM ${cfg.table}
-        WHERE ST_Intersects(${geomExpr}, ST_GeomFromText('${bboxWkt}'))
+        WHERE ${geomExpr} && ST_GeomFromText('${bboxWkt}') AND ST_Intersects(${geomExpr}, ST_GeomFromText('${bboxWkt}'))
         LIMIT 500
       `;
     } else {
@@ -1951,10 +1951,10 @@ app.get('/api/test-geol-parcela', async (req, res) => {
           const geojsonStr = JSON.stringify({ type:'Feature', geometry: JSON.parse(pr.rows[0].g), properties:{} });
           const result = { parcelaId: id };
           const qs = {
-                  pontos:   `SELECT COUNT(*) n FROM geologia_litologia.geol_ponto WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
-                  falhas:   `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_falha WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
-                  dobras:   `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_dobra WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
-                  fraturas: `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_fratura WHERE ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+                  pontos:   `SELECT COUNT(*) n FROM geologia_litologia.geol_ponto WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+                  falhas:   `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_falha WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+                  dobras:   `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_dobra WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
+                  fraturas: `SELECT COUNT(*) n FROM geologia_litologia.geol_linha_fratura WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674) AND ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'),4674))`,
           };
           for (const [k, sql] of Object.entries(qs)) {
                   try { const q = await pool.query(sql, [geojsonStr]); result[k] = parseInt(q.rows[0].n); }
