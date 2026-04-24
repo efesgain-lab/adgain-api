@@ -472,38 +472,48 @@ async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
 // ____________________________________________________________________________
 async function fetchPluviometriaCHIRPS(lat, lng) {
   const MONTHS_PT    = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const endYear      = new Date().getFullYear() - 1;   // ERA5 lag ~3 meses
-  const startYear    = endYear - 29;                    // 30 anos
+  const endYear      = new Date().getFullYear() - 1;   // ERA5: dados disponíveis até ~3 meses atrás
+  const startYear    = endYear - 29;                    // 30 anos de histórico
 
   try {
+    // Open-Meteo Historical Archive — parâmetro correto é "daily", não "monthly"
     const url = 'https://archive-api.open-meteo.com/v1/archive'
       + '?latitude='   + lat.toFixed(4)
       + '&longitude='  + lng.toFixed(4)
       + '&start_date=' + startYear + '-01-01'
       + '&end_date='   + endYear   + '-12-31'
-      + '&monthly=precipitation_sum'
-      + '&timezone=America%2FSao_Paulo';
+      + '&daily=precipitation_sum'
+      + '&timezone=UTC';
 
     const ctrl  = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 25000);
+    const timer = setTimeout(() => ctrl.abort(), 35000); // 35s para 30 anos de dados diários
     const resp  = await fetch(url, { signal: ctrl.signal });
     clearTimeout(timer);
     if (!resp.ok) throw new Error('Open-Meteo HTTP ' + resp.status);
     const data = await resp.json();
 
-    const times  = (data.monthly || {}).time              || [];
-    const precip = (data.monthly || {}).precipitation_sum || [];
+    const times  = (data.daily || {}).time              || []; // ['1994-01-01', ...]
+    const precip = (data.daily || {}).precipitation_sum || [];
 
-    const monthSums   = new Array(12).fill(0);
-    const monthCounts = new Array(12).fill(0);
+    // Agrega diário → total mensal por ano, depois média dos 30 anos por mês
+    const yearMonthTotals = {};
     times.forEach((t, i) => {
-      const m = parseInt(t.split('-')[1], 10) - 1;
-      if (precip[i] != null) { monthSums[m] += precip[i]; monthCounts[m]++; }
+      if (precip[i] == null) return;
+      const key = t.slice(0, 7); // 'YYYY-MM'
+      yearMonthTotals[key] = (yearMonthTotals[key] || 0) + precip[i];
+    });
+
+    const monthSums  = new Array(12).fill(0);
+    const monthCount = new Array(12).fill(0);
+    Object.entries(yearMonthTotals).forEach(([key, total]) => {
+      const m = parseInt(key.split('-')[1], 10) - 1; // 0-11
+      monthSums[m]  += total;
+      monthCount[m] += 1;
     });
 
     const media_mensal = MONTHS_PT.map((nome, i) => ({
       mes: nome,
-      mm:  monthCounts[i] > 0 ? Math.round(monthSums[i] / monthCounts[i] * 10) / 10 : null
+      mm:  monthCount[i] > 0 ? Math.round(monthSums[i] / monthCount[i] * 10) / 10 : null
     }));
     const total_anual        = media_mensal.reduce((s, m) => s + (m.mm || 0), 0);
     const media_anual_30anos = Math.round(total_anual * 10) / 10;
