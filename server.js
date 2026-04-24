@@ -228,13 +228,20 @@ async function anaGet(path, params = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 15000);
   try {
+    console.log('[ANA] GET', url, 'token[:20]:', token ? String(token).slice(0,20) : 'NONE');
     const resp = await fetch(url, {
       headers: { 'Authorization': `Bearer ${token}`, 'Accept': '*/*' },
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-    if (!resp.ok) throw new Error(`ANA ${path} HTTP ${resp.status}`);
-    return resp.json();
+    if (!resp.ok) {
+      let body406 = '';
+      try { body406 = await resp.text(); } catch(_) {}
+      console.log('[ANA] HTTP', resp.status, 'body[:200]:', body406.slice(0, 200));
+      throw new Error(`ANA ${path} HTTP ${resp.status}`);
+    }
+    const ct = resp.headers.get('content-type') || '';
+    return ct.includes('json') ? resp.json() : resp.json();
   } catch (e) {
     clearTimeout(timer);
     throw e;
