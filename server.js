@@ -1534,9 +1534,6 @@ app.post('/api/analises', async (req, res) => {
       console.warn('[Pluviometria/Solo] erro:', e.message);
       pluviometria = { pendente: false, erro: 'Erro interno: ' + e.message, media_mensal: null };
     }
-      console.warn('[Pluviometria/Solo] erro:', e.message);
-      pluviometria = { pendente: false, erro: 'Erro interno: ' + e.message, resumo: null, media_mensal: null };
-    }
 
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
     const centroidParsed = municipio.centroid ? JSON.parse(municipio.centroid) : null;
