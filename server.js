@@ -440,60 +440,43 @@ async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
 }
 
 // ============================================================================
-// CHIRPS — ClimateSERV (NASA SERVIR) — precipitação histórica 30 anos
-// ============================================================================
+// ____________________________________________________________________________
+// NASA POWER — precipitação histórica mensal (MERRA-2 PRECTOTCORR)
+// ____________________________________________________________________________
 async function fetchPluviometriaCHIRPS(lat, lng) {
-  const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const endYear   = new Date().getFullYear() - 1;
-  const startYear = endYear - 29; // 30 anos
+  const MONTHS_PT   = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const endYear     = new Date().getFullYear() - 1;
+  const startYear   = endYear - 29; // 30 anos
 
   try {
-    const geom = JSON.stringify({ type: 'Point', coordinates: [lng, lat] });
-    const qs = new URLSearchParams({
-      datatype:          '26',           // CHIRPS Final
-      begintime:         '01/01/' + startYear,
-      endtime:           '12/31/' + endYear,
-      intervaltype:      '0',            // mensal
-      operationtype:     '5',            // average
-      callback:          '',
-      dateType_Category: 'default',
-      geometry:          geom,
-    });
+    const url = 'https://power.larc.nasa.gov/api/temporal/monthly/point'
+      + '?parameters=PRECTOTCORR&community=RE'
+      + '&longitude=' + lng.toFixed(4) + '&latitude=' + lat.toFixed(4)
+      + '&start=' + startYear + '0101&end=' + endYear + '1231&format=JSON';
 
-    const submitUrl = 'https://climateserv.servirglobal.net/api/submitDataRequest/?' + qs;
-    const submitResp = await fetch(submitUrl, { signal: AbortSignal.timeout(20000) });
-    if (!submitResp.ok) throw new Error('ClimateSERV submit HTTP ' + submitResp.status);
-    const submitJson = await submitResp.json();
-    const requestId  = Array.isArray(submitJson) ? submitJson[0] : submitJson;
-    if (!requestId) throw new Error('ClimateSERV: sem requestId');
+    const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!resp.ok) throw new Error('NASA POWER HTTP ' + resp.status);
+    const data = await resp.json();
 
-    // Polling (máx 60s)
-    let dataPoints = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await new Promise(r => setTimeout(r, 2000));
-      const pollResp = await fetch(
-        'https://climateserv.servirglobal.net/api/getDataFromRequest/?id=' + requestId,
-        { signal: AbortSignal.timeout(15000) }
-      );
-      const pollJson = await pollResp.json();
-      const pts = pollJson?.[0]?.data;
-      if (Array.isArray(pts) && pts.length > 0) { dataPoints = pts; break; }
-    }
-    if (!dataPoints) throw new Error('CHIRPS: timeout aguardando dados');
+    const monthly = data && data.properties && data.properties.parameter && data.properties.parameter.PRECTOTCORR;
+    if (!monthly) throw new Error('NASA POWER: sem dados de precipitação');
 
-    // Agregar por mês e por ano
+    // Agrupar por mês (média 30 anos) e por ano
     const monthSums   = new Array(12).fill(0);
     const monthCounts = new Array(12).fill(0);
     const yearTotals  = {};
-    for (const pt of dataPoints) {
-      const d   = new Date(pt.date);
-      const mon = d.getMonth();
-      const yr  = d.getFullYear();
-      const val = parseFloat(pt.value);
-      if (isNaN(val) || val < 0) continue;
-      monthSums[mon]   += val;
+
+    for (const key of Object.keys(monthly)) {
+      const val = monthly[key];
+      if (val === null || val === undefined || val === -999) continue;
+      const year  = parseInt(key.slice(0, 4));
+      const mon   = parseInt(key.slice(4, 6)) - 1; // 0-indexed
+      const mmMes = parseFloat(val) * daysInMonth[mon]; // mm/dia -> mm/mes
+      if (isNaN(mmMes) || mmMes < 0) continue;
+      monthSums[mon]   += mmMes;
       monthCounts[mon] += 1;
-      yearTotals[yr]    = (yearTotals[yr] || 0) + val;
+      yearTotals[year]  = (yearTotals[year] || 0) + mmMes;
     }
 
     const media_mensal = MONTHS_PT.map((mes, i) => ({
@@ -509,14 +492,14 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
     return {
       pendente: false,
       erro: null,
-      fonte: 'CHIRPS ' + startYear + '-' + endYear + ' (' + yrArr.length + ' anos)',
+      fonte: 'NASA POWER MERRA-2 ' + startYear + '-' + endYear + ' (' + yrArr.length + ' anos)',
       media_mensal,
       total_anual: media_anual_30anos,
       media_anual_30anos,
     };
   } catch (e) {
-    console.warn('[CHIRPS] erro:', e.message);
-    return { pendente: false, erro: 'CHIRPS: ' + e.message, media_mensal: null, total_anual: null, media_anual_30anos: null };
+    console.warn('[NASA POWER] erro:', e.message);
+    return { pendente: false, erro: 'Chuva: ' + e.message, media_mensal: null, total_anual: null, media_anual_30anos: null };
   }
 }
 
@@ -524,41 +507,57 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
 // SoilGrids v2.0 — ISRIC — propriedades do solo por camada
 // ============================================================================
 async function fetchSoilGrids(lat, lng) {
+  const props  = ['clay', 'sand', 'silt', 'soc', 'phh2o', 'nitrogen', 'bdod'];
+  const depths = ['0-5cm', '5-15cm', '15-30cm', '30-60cm'];
+
+  const qs = new URLSearchParams();
+  qs.append('lon', lng.toFixed(6));
+  qs.append('lat', lat.toFixed(6));
+  props.forEach(p  => qs.append('property', p));
+  depths.forEach(d => qs.append('depth', d));
+  ['mean'].forEach(val => qs.append('value', val));
+
+  const url = 'https://rest.isric.org/soilgrids/v2.0/properties/query?' + qs.toString();
+
+  let data = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 2000));
+      console.log('[SoilGrids] tentativa', attempt + 1, url.slice(0, 80));
+      const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
+      data = await resp.json();
+      break;
+    } catch (e) {
+      console.warn('[SoilGrids] tentativa', attempt + 1, 'erro:', e.message);
+      if (attempt === 2) {
+        return { pendente: false, erro: 'Solo: ' + e.message, camadas: null };
+      }
+    }
+  }
+
   try {
-    const props  = ['clay', 'sand', 'silt', 'soc', 'phh2o', 'nitrogen', 'bdod'];
-    const depths = ['0-5cm', '5-15cm', '15-30cm', '30-60cm'];
-
-    const qs = new URLSearchParams();
-    qs.append('lon', lng.toFixed(6));
-    qs.append('lat', lat.toFixed(6));
-    props.forEach(p  => qs.append('property', p));
-    depths.forEach(d => qs.append('depth', d));
-    ['mean'].forEach(v => qs.append('value', v));
-
-    const resp = await fetch('https://rest.isric.org/soilgrids/v2.0/properties/query?' + qs, {
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
-    const data = await resp.json();
-
-    // Fatores de conversão SoilGrids → unidade final
+    // Fatores de conversao SoilGrids -> unidade final
     const factor = { clay: 0.1, sand: 0.1, silt: 0.1, soc: 0.1, phh2o: 0.1, nitrogen: 0.01, bdod: 0.01 };
     const label  = { clay: 'argila_%', sand: 'areia_%', silt: 'silte_%', soc: 'carbono_organico_g_kg', phh2o: 'ph', nitrogen: 'nitrogenio_g_kg', bdod: 'densidade_g_cm3' };
 
     const camadas = {};
-    for (const layer of (data?.properties?.layers || [])) {
+    const layers = (data && data.properties && data.properties.layers) ? data.properties.layers : [];
+    for (const layer of layers) {
       for (const dep of (layer.depths || [])) {
         const d   = dep.label;
-        const val = dep.values?.mean;
+        const val = dep.values && dep.values.mean;
         if (!camadas[d]) camadas[d] = {};
-        camadas[d][label[layer.name]] = val != null ? Math.round(val * factor[layer.name] * 10) / 10 : null;
+        camadas[d][label[layer.name]] = val !== null && val !== undefined
+          ? Math.round(val * factor[layer.name] * 10) / 10
+          : null;
       }
     }
 
     return { pendente: false, erro: null, camadas };
   } catch (e) {
-    console.warn('[SoilGrids] erro:', e.message);
-    return { pendente: false, erro: 'SoilGrids: ' + e.message, camadas: null };
+    console.warn('[SoilGrids] parse erro:', e.message);
+    return { pendente: false, erro: 'Solo (parse): ' + e.message, camadas: null };
   }
 }
 
