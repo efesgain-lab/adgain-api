@@ -471,61 +471,53 @@ async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
 // NASA POWER — precipitação histórica mensal (MERRA-2 PRECTOTCORR)
 // ____________________________________________________________________________
 async function fetchPluviometriaCHIRPS(lat, lng) {
-  const MONTHS_PT   = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  const endYear     = new Date().getFullYear() - 2; // dados MERRA-2 com lag de ~18 meses
-  const startYear   = endYear - 29; // 30 anos
+  const MONTHS_PT    = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const endYear      = new Date().getFullYear() - 1;   // ERA5 lag ~3 meses
+  const startYear    = endYear - 29;                    // 30 anos
 
   try {
-    const url = 'https://power.larc.nasa.gov/api/temporal/monthly/point'
-      + '?parameters=PRECTOTCORR&community=AG'
-      + '&longitude=' + lng.toFixed(4) + '&latitude=' + lat.toFixed(4)
-      + '&start=' + startYear + '01&end=' + endYear + '12&format=JSON';
+    const url = 'https://archive-api.open-meteo.com/v1/archive'
+      + '?latitude='   + lat.toFixed(4)
+      + '&longitude='  + lng.toFixed(4)
+      + '&start_date=' + startYear + '-01-01'
+      + '&end_date='   + endYear   + '-12-31'
+      + '&monthly=precipitation_sum'
+      + '&timezone=America%2FSao_Paulo';
 
-    const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
-    if (!resp.ok) throw new Error('NASA POWER HTTP ' + resp.status);
+    const ctrl  = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 25000);
+    const resp  = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error('Open-Meteo HTTP ' + resp.status);
     const data = await resp.json();
 
-    const monthly = data && data.properties && data.properties.parameter && data.properties.parameter.PRECTOTCORR;
-    if (!monthly) throw new Error('NASA POWER: sem dados de precipitação');
+    const times  = (data.monthly || {}).time              || [];
+    const precip = (data.monthly || {}).precipitation_sum || [];
 
-    // Agrupar por mês (média 30 anos) e por ano
     const monthSums   = new Array(12).fill(0);
     const monthCounts = new Array(12).fill(0);
-    const yearTotals  = {};
+    times.forEach((t, i) => {
+      const m = parseInt(t.split('-')[1], 10) - 1;
+      if (precip[i] != null) { monthSums[m] += precip[i]; monthCounts[m]++; }
+    });
 
-    for (const key of Object.keys(monthly)) {
-      const val = monthly[key];
-      if (val === null || val === undefined || val === -999) continue;
-      const year  = parseInt(key.slice(0, 4));
-      const mon   = parseInt(key.slice(4, 6)) - 1; // 0-indexed
-      const mmMes = parseFloat(val) * daysInMonth[mon]; // mm/dia -> mm/mes
-      if (isNaN(mmMes) || mmMes < 0) continue;
-      monthSums[mon]   += mmMes;
-      monthCounts[mon] += 1;
-      yearTotals[year]  = (yearTotals[year] || 0) + mmMes;
-    }
-
-    const media_mensal = MONTHS_PT.map((mes, i) => ({
-      mes,
-      media_mm: monthCounts[i] > 0 ? Math.round(monthSums[i] / monthCounts[i]) : 0,
+    const media_mensal = MONTHS_PT.map((nome, i) => ({
+      mes: nome,
+      mm:  monthCounts[i] > 0 ? Math.round(monthSums[i] / monthCounts[i] * 10) / 10 : null
     }));
+    const total_anual        = media_mensal.reduce((s, m) => s + (m.mm || 0), 0);
+    const media_anual_30anos = Math.round(total_anual * 10) / 10;
 
-    const yrArr = Object.values(yearTotals);
-    const media_anual_30anos = yrArr.length > 0
-      ? Math.round(yrArr.reduce((s, v) => s + v, 0) / yrArr.length)
-      : 0;
-
+    console.log('[Open-Meteo] OK lat=' + lat.toFixed(3) + ' anual=' + media_anual_30anos + 'mm');
     return {
       pendente: false,
-      erro: null,
-      fonte: 'NASA POWER MERRA-2 ' + startYear + '-' + endYear + ' (' + yrArr.length + ' anos)',
+      fonte: 'ERA5/Open-Meteo (' + startYear + '-' + endYear + ')',
       media_mensal,
-      total_anual: media_anual_30anos,
-      media_anual_30anos,
+      total_anual:       Math.round(total_anual * 10) / 10,
+      media_anual_30anos
     };
   } catch (e) {
-    console.warn('[NASA POWER] erro:', e.message);
+    console.warn('[Open-Meteo] erro:', e.message);
     return { pendente: false, erro: 'Chuva: ' + e.message, media_mensal: null, total_anual: null, media_anual_30anos: null };
   }
 }
@@ -548,8 +540,8 @@ async function fetchSoilGrids(lat, lng) {
 
   try {
     console.log('[SoilGrids] fetch', url.slice(0, 80));
-    // Timeout curto: se isric.org nao responder em 8s, falha rapido
-    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    // Timeout: ISRIC pode ser lento — aguarda ate 20s antes de desistir
+    const resp = await fetch(url, { signal: AbortSignal.timeout(20000) });
     if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
     const data = await resp.json();
 
