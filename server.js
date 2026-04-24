@@ -451,7 +451,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
 
   try {
     const url = 'https://power.larc.nasa.gov/api/temporal/monthly/point'
-      + '?parameters=PRECTOTCORR&community=RE'
+      + '?parameters=PRECTOTCORR&community=AG'
       + '&longitude=' + lng.toFixed(4) + '&latitude=' + lat.toFixed(4)
       + '&start=' + startYear + '0101&end=' + endYear + '1231&format=JSON';
 
