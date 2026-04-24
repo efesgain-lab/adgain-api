@@ -729,17 +729,6 @@ app.post('/api/analises', async (req, res) => {
       area_hectares: 0,
     };
 
-    // Iniciar chamadas externas em paralelo com as queries do DB
-    const _centroid0 = municipio.centroid ? JSON.parse(municipio.centroid) : null;
-    const _pLat0 = _centroid0 ? _centroid0.coordinates[1] : null;
-    const _pLng0 = _centroid0 ? _centroid0.coordinates[0] : null;
-    const chirpsPromise = _pLat0 !== null
-      ? fetchPluviometriaCHIRPS(_pLat0, _pLng0)
-      : Promise.resolve({ pendente: false, erro: 'Sem coordenadas', media_mensal: null, total_anual: null, media_anual_30anos: null });
-    const soilPromise = _pLat0 !== null
-      ? fetchSoilGrids(_pLat0, _pLng0)
-      : Promise.resolve({ pendente: false, erro: 'Sem coordenadas', camadas: null });
-
     // State-specific table names (lowercase UF)
     const uf = municipio.uf.toLowerCase();
     const sigefTable = `incra.sigef_${uf}`;
@@ -1500,9 +1489,14 @@ app.post('/api/analises', async (req, res) => {
     let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', media_mensal: null };
     let solo = { pendente: false, erro: 'Coordenadas não disponíveis', camadas: null };
     try {
-      const centroidForPluvio = _centroid0;
+      const centroidForPluvio = municipio.centroid ? JSON.parse(municipio.centroid) : null;
       if (centroidForPluvio) {
-        const [chirpsResult, soilResult] = await Promise.all([chirpsPromise, soilPromise]);
+        const pLat = centroidForPluvio.coordinates[1];
+        const pLng = centroidForPluvio.coordinates[0];
+        const [chirpsResult, soilResult] = await Promise.all([
+          fetchPluviometriaCHIRPS(pLat, pLng),
+          fetchSoilGrids(pLat, pLng),
+        ]);
 
         pluviometria = {
           pendente: false,
