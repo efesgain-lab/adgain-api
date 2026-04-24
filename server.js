@@ -262,7 +262,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
  * fetches 10 years of daily data and aggregates into monthly averages + annual totals.
  * Never throws — returns error object on failure.
  */
-async function fetchPluviometriaANA(lat, lng) {
+async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
   const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const MAX_DIST_KM  = 600;
 
@@ -331,15 +331,14 @@ async function fetchPluviometriaANA(lat, lng) {
   try {
     // ── 1. Inventário de estações pluviométricas próximas ──
     const delta = 6.0;
-    let stations = [];
+    // ── 1. Buscar inventário de estações pluviométricas por UF ──
     try {
+      const ufCode = (uf || 'MT').toUpperCase();
       const inv = await anaGet('HidroInventarioEstacoes/v1', {
         tipoEstacao: '2',
-        latitudeMinima:  (lat - delta).toFixed(4),
-        latitudeMaxima:  (lat + delta).toFixed(4),
-        longitudeMinima: (lng - delta).toFixed(4),
-        longitudeMaxima: (lng + delta).toFixed(4),
+        uf: ufCode,
       });
+      console.log('[ANA] inv keys:', inv && typeof inv === 'object' ? Object.keys(inv).join(',') : String(inv).slice(0,100));
       const raw = inv?.items
         || inv?.value
         || inv?.estacoes
@@ -349,26 +348,10 @@ async function fetchPluviometriaANA(lat, lng) {
         || inv?.HidroInventarioEstacoes?.estacao
         || (inv?.HidroInventarioEstacoes && Object.values(inv.HidroInventarioEstacoes).find(v => Array.isArray(v)))
         || inv;
-      console.log('[ANA] inv keys:', inv && typeof inv === 'object' ? Object.keys(inv).join(',') : String(inv).slice(0,100));
       if (Array.isArray(raw)) stations = raw;
       else if (raw && typeof raw === 'object') stations = Object.values(raw);
     } catch (e) {
-      console.warn('[ANA] Inventário com bbox falhou:', e.message, '— sem bbox');
-      try {
-        const inv2 = await anaGet('HidroInventarioEstacoes/v1', { tipoEstacao: '2' });
-        const raw2 = inv2?.items
-          || inv2?.value
-          || inv2?.estacoes
-          || inv2?.Estacao
-          || inv2?.estacao
-          || inv2?.HidroInventarioEstacoes?.Estacao
-          || inv2?.HidroInventarioEstacoes?.estacao
-          || (inv2?.HidroInventarioEstacoes && Object.values(inv2.HidroInventarioEstacoes).find(v => Array.isArray(v)))
-          || inv2;
-        console.log('[ANA] inv2 keys:', inv2 && typeof inv2 === 'object' ? Object.keys(inv2).join(',') : String(inv2).slice(0,100));
-        if (Array.isArray(raw2)) stations = raw2;
-        else if (raw2 && typeof raw2 === 'object') stations = Object.values(raw2);
-      } catch (e2) { console.warn('[ANA] Inventário sem bbox falhou:', e2.message); }
+      console.warn('[ANA] Inventário falhou:', e.message);
     }
     if (stations.length === 0) {
       return { pendente: false, erro: 'Nenhuma estação pluviométrica ANA encontrada', resumo: null, media_mensal: [], total_anual: [] };
@@ -1532,7 +1515,7 @@ app.post('/api/analises', async (req, res) => {
 
         // Paralelo: ANA, CHIRPS e SoilGrids
         const [anaResult, chirpsResult, soilResult] = await Promise.all([
-          fetchPluviometriaANA(pLat, pLng),
+          fetchPluviometriaANA(pLat, pLng, municipio.uf),
           fetchPluviometriaCHIRPS(pLat, pLng),
           fetchSoilGrids(pLat, pLng),
         ]);
