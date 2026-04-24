@@ -444,6 +444,130 @@ async function fetchPluviometriaANA(lat, lng) {
   }
 }
 
+// ============================================================================
+// CHIRPS — ClimateSERV (NASA SERVIR) — precipitação histórica 30 anos
+// ============================================================================
+async function fetchPluviometriaCHIRPS(lat, lng) {
+  const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const endYear   = new Date().getFullYear() - 1;
+  const startYear = endYear - 29; // 30 anos
+
+  try {
+    const geom = JSON.stringify({ type: 'Point', coordinates: [lng, lat] });
+    const qs = new URLSearchParams({
+      datatype:          '26',           // CHIRPS Final
+      begintime:         '01/01/' + startYear,
+      endtime:           '12/31/' + endYear,
+      intervaltype:      '0',            // mensal
+      operationtype:     '5',            // average
+      callback:          '',
+      dateType_Category: 'default',
+      geometry:          geom,
+    });
+
+    const submitUrl = 'https://climateserv.servirglobal.net/api/submitDataRequest/?' + qs;
+    const submitResp = await fetch(submitUrl, { signal: AbortSignal.timeout(20000) });
+    if (!submitResp.ok) throw new Error('ClimateSERV submit HTTP ' + submitResp.status);
+    const submitJson = await submitResp.json();
+    const requestId  = Array.isArray(submitJson) ? submitJson[0] : submitJson;
+    if (!requestId) throw new Error('ClimateSERV: sem requestId');
+
+    // Polling (máx 60s)
+    let dataPoints = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const pollResp = await fetch(
+        'https://climateserv.servirglobal.net/api/getDataFromRequest/?id=' + requestId,
+        { signal: AbortSignal.timeout(15000) }
+      );
+      const pollJson = await pollResp.json();
+      const pts = pollJson?.[0]?.data;
+      if (Array.isArray(pts) && pts.length > 0) { dataPoints = pts; break; }
+    }
+    if (!dataPoints) throw new Error('CHIRPS: timeout aguardando dados');
+
+    // Agregar por mês e por ano
+    const monthSums   = new Array(12).fill(0);
+    const monthCounts = new Array(12).fill(0);
+    const yearTotals  = {};
+    for (const pt of dataPoints) {
+      const d   = new Date(pt.date);
+      const mon = d.getMonth();
+      const yr  = d.getFullYear();
+      const val = parseFloat(pt.value);
+      if (isNaN(val) || val < 0) continue;
+      monthSums[mon]   += val;
+      monthCounts[mon] += 1;
+      yearTotals[yr]    = (yearTotals[yr] || 0) + val;
+    }
+
+    const media_mensal = MONTHS_PT.map((mes, i) => ({
+      mes,
+      media_mm: monthCounts[i] > 0 ? Math.round(monthSums[i] / monthCounts[i]) : 0,
+    }));
+
+    const yrArr = Object.values(yearTotals);
+    const media_anual_30anos = yrArr.length > 0
+      ? Math.round(yrArr.reduce((s, v) => s + v, 0) / yrArr.length)
+      : 0;
+
+    return {
+      pendente: false,
+      erro: null,
+      fonte: 'CHIRPS ' + startYear + '-' + endYear + ' (' + yrArr.length + ' anos)',
+      media_mensal,
+      total_anual: media_anual_30anos,
+      media_anual_30anos,
+    };
+  } catch (e) {
+    console.warn('[CHIRPS] erro:', e.message);
+    return { pendente: false, erro: 'CHIRPS: ' + e.message, media_mensal: null, total_anual: null, media_anual_30anos: null };
+  }
+}
+
+// ============================================================================
+// SoilGrids v2.0 — ISRIC — propriedades do solo por camada
+// ============================================================================
+async function fetchSoilGrids(lat, lng) {
+  try {
+    const props  = ['clay', 'sand', 'silt', 'soc', 'phh2o', 'nitrogen', 'bdod'];
+    const depths = ['0-5cm', '5-15cm', '15-30cm', '30-60cm'];
+
+    const qs = new URLSearchParams();
+    qs.append('lon', lng.toFixed(6));
+    qs.append('lat', lat.toFixed(6));
+    props.forEach(p  => qs.append('property', p));
+    depths.forEach(d => qs.append('depth', d));
+    ['mean'].forEach(v => qs.append('value', v));
+
+    const resp = await fetch('https://rest.isric.org/soilgrids/v2.0/properties/query?' + qs, {
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
+    const data = await resp.json();
+
+    // Fatores de conversão SoilGrids → unidade final
+    const factor = { clay: 0.1, sand: 0.1, silt: 0.1, soc: 0.1, phh2o: 0.1, nitrogen: 0.01, bdod: 0.01 };
+    const label  = { clay: 'argila_%', sand: 'areia_%', silt: 'silte_%', soc: 'carbono_organico_g_kg', phh2o: 'ph', nitrogen: 'nitrogenio_g_kg', bdod: 'densidade_g_cm3' };
+
+    const camadas = {};
+    for (const layer of (data?.properties?.layers || [])) {
+      for (const dep of (layer.depths || [])) {
+        const d   = dep.label;
+        const val = dep.values?.mean;
+        if (!camadas[d]) camadas[d] = {};
+        camadas[d][label[layer.name]] = val != null ? Math.round(val * factor[layer.name] * 10) / 10 : null;
+      }
+    }
+
+    return { pendente: false, erro: null, camadas };
+  } catch (e) {
+    console.warn('[SoilGrids] erro:', e.message);
+    return { pendente: false, erro: 'SoilGrids: ' + e.message, camadas: null };
+  }
+}
+
+
 /**
  * Safely parse GeoJSON feature
  */
@@ -1385,19 +1509,42 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.suture_zones = sutureResult.rows;
 
-    // 9.15 Pluviometria — ANA HidroWebservice
-    // Extract centroid lat/lng for station lookup (centroid parsed later too)
-    let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', resumo: null, media_mensal: [], total_anual: [] };
+    // 9.15 Pluviometria (ANA HidroWebservice + CHIRPS 30 anos) + 9.16 Solo (SoilGrids)
+    let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', resumo: null, media_mensal: null };
+    let solo = { pendente: false, erro: 'Coordenadas não disponíveis', camadas: null };
     try {
       const centroidForPluvio = municipio.centroid ? JSON.parse(municipio.centroid) : null;
       if (centroidForPluvio) {
-        const pluvioLat = centroidForPluvio.coordinates[1];
-        const pluvioLng = centroidForPluvio.coordinates[0];
-        pluviometria = await fetchPluviometriaANA(pluvioLat, pluvioLng);
+        const pLat = centroidForPluvio.coordinates[1];
+        const pLng = centroidForPluvio.coordinates[0];
+
+        // Paralelo: ANA, CHIRPS e SoilGrids
+        const [anaResult, chirpsResult, soilResult] = await Promise.all([
+          fetchPluviometriaANA(pLat, pLng),
+          fetchPluviometriaCHIRPS(pLat, pLng),
+          fetchSoilGrids(pLat, pLng),
+        ]);
+
+        // Mescla: usa dados ANA se ok, caso contrário usa CHIRPS para médias mensais
+        const anaOk    = !anaResult.erro && Array.isArray(anaResult.media_mensal);
+        const chirpsOk = !chirpsResult.erro && Array.isArray(chirpsResult.media_mensal);
+
+        pluviometria = {
+          pendente: false,
+          erro: anaOk ? null : (chirpsOk ? null : (anaResult.erro || chirpsResult.erro)),
+          fonte_recente:   anaOk    ? anaResult.resumo?.fonte    : null,
+          fonte_historica: chirpsOk ? chirpsResult.fonte : null,
+          media_mensal:    anaOk    ? anaResult.media_mensal     : (chirpsOk ? chirpsResult.media_mensal : null),
+          total_anual:     anaOk    ? anaResult.total_anual      : (chirpsOk ? chirpsResult.total_anual  : null),
+          media_anual_30anos: chirpsOk ? chirpsResult.media_anual_30anos : null,
+          resumo: anaOk ? anaResult.resumo : null,
+        };
+
+        solo = soilResult;
       }
     } catch (e) {
-      console.warn('[ANA] Pluviometria block error:', e.message);
-      pluviometria = { pendente: false, erro: `Erro interno pluviometria: ${e.message}`, resumo: null, media_mensal: [], total_anual: [] };
+      console.warn('[Pluviometria/Solo] erro:', e.message);
+      pluviometria = { pendente: false, erro: 'Erro interno: ' + e.message, resumo: null, media_mensal: null };
     }
 
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
@@ -1454,6 +1601,7 @@ app.post('/api/analises', async (req, res) => {
       aquiferos: analyses['9.13b_aquiferos'].data,
       analises_adicionais: analyses['9.14_analises_adicionais'],
       pluviometria,
+      solo,
       municipio:  { NM_MUN: municipio.municipio, SIGLA_UF: municipio.uf, CD_MUN: '' },
       municipios: [{ nm_mun: municipio.municipio, sigla_uf: municipio.uf }],
       centroide:  centroidParsed ? { lat: centroidParsed.coordinates[1], lng: centroidParsed.coordinates[0] } : { lat: 0, lng: 0 },
