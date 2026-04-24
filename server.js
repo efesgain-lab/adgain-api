@@ -1504,8 +1504,8 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.suture_zones = sutureResult.rows;
 
-    // 9.15 Pluviometria (ANA HidroWebservice + CHIRPS 30 anos) + 9.16 Solo (SoilGrids)
-    let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', resumo: null, media_mensal: null };
+    // 9.15 Pluviometria (CHIRPS 30 anos) + 9.16 Solo (SoilGrids)
+    let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', media_mensal: null };
     let solo = { pendente: false, erro: 'Coordenadas não disponíveis', camadas: null };
     try {
       const centroidForPluvio = municipio.centroid ? JSON.parse(municipio.centroid) : null;
@@ -1513,31 +1513,27 @@ app.post('/api/analises', async (req, res) => {
         const pLat = centroidForPluvio.coordinates[1];
         const pLng = centroidForPluvio.coordinates[0];
 
-        // Paralelo: ANA, CHIRPS e SoilGrids
-        const [anaResult, chirpsResult, soilResult] = await Promise.all([
-          fetchPluviometriaANA(pLat, pLng, municipio.uf),
+        // Paralelo: CHIRPS e SoilGrids
+        const [chirpsResult, soilResult] = await Promise.all([
           fetchPluviometriaCHIRPS(pLat, pLng),
           fetchSoilGrids(pLat, pLng),
         ]);
 
-        // Mescla: usa dados ANA se ok, caso contrário usa CHIRPS para médias mensais
-        const anaOk    = !anaResult.erro && Array.isArray(anaResult.media_mensal);
-        const chirpsOk = !chirpsResult.erro && Array.isArray(chirpsResult.media_mensal);
-
         pluviometria = {
           pendente: false,
-          erro: anaOk ? null : (chirpsOk ? null : (anaResult.erro || chirpsResult.erro)),
-          fonte_recente:   anaOk    ? anaResult.resumo?.fonte    : null,
-          fonte_historica: chirpsOk ? chirpsResult.fonte : null,
-          media_mensal:    anaOk    ? anaResult.media_mensal     : (chirpsOk ? chirpsResult.media_mensal : null),
-          total_anual:     anaOk    ? anaResult.total_anual      : (chirpsOk ? chirpsResult.total_anual  : null),
-          media_anual_30anos: chirpsOk ? chirpsResult.media_anual_30anos : null,
-          resumo: anaOk ? anaResult.resumo : null,
+          erro: chirpsResult.erro || null,
+          fonte: chirpsResult.fonte || null,
+          media_mensal: chirpsResult.media_mensal || null,
+          total_anual: chirpsResult.total_anual || null,
+          media_anual_30anos: chirpsResult.media_anual_30anos || null,
         };
 
         solo = soilResult;
       }
     } catch (e) {
+      console.warn('[Pluviometria/Solo] erro:', e.message);
+      pluviometria = { pendente: false, erro: 'Erro interno: ' + e.message, media_mensal: null };
+    }
       console.warn('[Pluviometria/Solo] erro:', e.message);
       pluviometria = { pendente: false, erro: 'Erro interno: ' + e.message, resumo: null, media_mensal: null };
     }
