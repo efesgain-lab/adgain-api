@@ -144,7 +144,7 @@ async function getUFFromGeoJSON(geojsonStr) {
     const result = await pool.query(`
       SELECT LOWER(m."SIGLA_UF") as uf_lower
       FROM municipios.municipios_2024 m
-      WHERE m.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE m.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(m.geom) != ${SRID} THEN ST_SetSRID(m.geom, ${SRID}) ELSE m.geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       LIMIT 1
     `, [geojsonStr]);
     return result.rows[0]?.uf_lower || null;
@@ -473,7 +473,7 @@ async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
 async function fetchPluviometriaCHIRPS(lat, lng) {
   const MONTHS_PT   = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  const endYear     = new Date().getFullYear() - 1;
+  const endYear     = new Date().getFullYear() - 2; // dados MERRA-2 com lag de ~18 meses
   const startYear   = endYear - 29; // 30 anos
 
   try {
@@ -726,7 +726,7 @@ app.post('/api/analises', async (req, res) => {
         ST_AsGeoJSON(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as centroid,
         ROUND(CAST(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 32721)) / 10000 AS numeric), 2) as area_hectares
       FROM municipios.municipios_2024 m
-      WHERE m.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE m.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(m.geom) != ${SRID} THEN ST_SetSRID(m.geom, ${SRID}) ELSE m.geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       ORDER BY ST_Area(ST_Intersection(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) DESC
       LIMIT 1
     `, [geojsonStr]);
@@ -1125,7 +1125,7 @@ app.post('/api/analises', async (req, res) => {
     const compParcelRes = await safeQuery(`
       SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))::geography)), 0) AS len_m
       FROM hidrografia.geoft_bho_2017_curso_dagua c
-      WHERE c.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE c.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(c.geom) != ${SRID} THEN ST_SetSRID(c.geom, ${SRID}) ELSE c.geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     // Nomes de rios: hidrografia.rio_nomes (NORIOCOMP) — ST_DWithin 100m
     const nomesRes = await safeQuery(`
@@ -1142,7 +1142,7 @@ app.post('/api/analises', async (req, res) => {
     const ordensRes = await safeQuery(`
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
       FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       GROUP BY nuordemcda ORDER BY nuordemcda DESC
     `, [geojsonStr]);
     const totalRaio = parseInt(padraoAgg.rows[0]?.total || 0);
