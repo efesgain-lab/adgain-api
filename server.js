@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config()
 
 const express = require('express');
 const cors = require('cors');
@@ -1834,10 +1834,40 @@ app.post('/api/relatorio', async (req, res) => {
     // Import reportService
     const reportService = require('./reportService');
 
-    const pdfBuffer = await reportService.generatePDF({
+        // Query soil polygon geometries for the soil map
+    let soloGeoms = [];
+    if (geojson) {
+      try {
+        const geomStr = typeof geojson === 'string' ? geojson : JSON.stringify(geojson);
+        const soloQuery = await pool.query(`
+          SELECT
+            nome,
+            ST_AsGeoJSON(ST_Intersection(
+              CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END,
+              ST_GeomFromGeoJSON($1)
+            )) as geom_json,
+            ROUND(CAST(ST_Area(ST_Intersection(
+              CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END,
+              ST_GeomFromGeoJSON($1)
+            )) / ST_Area(ST_GeomFromGeoJSON($1)) * 100 AS numeric), 2) as percentual
+          FROM solo.pedo_area
+          WHERE ST_Intersects(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END,
+            ST_GeomFromGeoJSON($1)
+          )
+          ORDER BY percentual DESC
+        `, [geomStr]);
+        soloGeoms = soloQuery.rows;
+      } catch (e) {
+        console.warn('soloGeoms query error:', e.message);
+      }
+    }
+
+const pdfBuffer = await reportService.generatePDF({
       analyses: analyses,
       municipio: municipio,
       geojson: geojson,
+      soloGeoms: soloGeoms,
       generatedAt: new Date(),
     });
 
