@@ -1597,7 +1597,7 @@ app.post('/api/analises', async (req, res) => {
       aquiferos: analyses['9.13b_aquiferos'].data,
       analises_adicionais: analyses['9.14_analises_adicionais'],
       pluviometria,
-      solo,
+      solo_soilgrids: solo,
       municipio:  { NM_MUN: municipio.municipio, SIGLA_UF: municipio.uf, CD_MUN: '' },
       municipios: [{ nm_mun: municipio.municipio, sigla_uf: municipio.uf }],
       centroide:  centroidParsed ? { lat: centroidParsed.coordinates[1], lng: centroidParsed.coordinates[0] } : { lat: 0, lng: 0 },
