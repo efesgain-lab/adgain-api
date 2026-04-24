@@ -1,4 +1,4 @@
-const PDFDocument = require('pdfkit');
+const PDFDocument = require('pdfkit')
 const { Readable } = require('stream');
 
 class ReportService {
@@ -173,8 +173,8 @@ class ReportService {
     // 9.2 Registral
     this._addSection(doc, '9.2 Registral', analyses['9.2_registral']);
 
-    // 9.3 Solo
-    this._addSection(doc, '9.3 Solo (Pedologia)', analyses['9.3_solo']);
+    // 9.3 Solo - with colored map
+    this._addSoloSection(doc, analyses['9.3_solo'], data.soloGeoms, data.geojson);
 
     // 9.4 Bioma
     this._addSection(doc, '9.4 Bioma', analyses['9.4_bioma']);
@@ -316,6 +316,239 @@ class ReportService {
         doc.text(`• ${item.nome} (Cartório ${item.cartorio_numero})`, 50, doc.y);
       });
     }
+  }
+
+  /**
+   * Add Solo section with colored map + table
+   */
+  static _addSoloSection(doc, data, soloGeoms, geojson) {
+    if (doc.y > doc.page.height - 100) doc.addPage();
+
+    doc.fontSize(12).font('Helvetica-Bold').fillColor('#1a3a52');
+    doc.text('9.3 Solo (Pedologia)', 40, doc.y);
+    doc.moveTo(40, doc.y + 5).lineTo(doc.page.width - 40, doc.y + 5).stroke();
+    doc.y += 25;
+    doc.fillColor('black').font('Helvetica');
+
+    if (!data) {
+      doc.fontSize(10).text('Sem dados disponíveis', 40, doc.y);
+      doc.y += 15;
+      return;
+    }
+
+    // Draw colored soil map
+    if (soloGeoms && soloGeoms.length > 0) {
+      this._drawSoloMap(doc, soloGeoms, geojson);
+      doc.y += 10;
+    }
+
+    // Draw percentual table below the map
+    this._addPercentualSection(doc, data, '9.3 Solo (Pedologia)');
+  }
+
+  /**
+   * Return a distinct color for each Brazilian soil order (SiBCS)
+   */
+  static _getSoilColor(nome) {
+    if (!nome) return '#AAAAAA';
+    const u = nome.toUpperCase();
+    if (u.includes('LATOSSOLO'))   return '#E8A838';
+    if (u.includes('ARGISSOLO'))   return '#C87032';
+    if (u.includes('NITOSSOLO'))   return '#A0522D';
+    if (u.includes('CAMBISSOLO'))  return '#DEB887';
+    if (u.includes('GLEISSOLO'))   return '#6B8E9F';
+    if (u.includes('NEOSSOLO'))    return '#F4D03F';
+    if (u.includes('ESPODOSSOLO')) return '#85929E';
+    if (u.includes('PLINTOSSOLO')) return '#C0392B';
+    if (u.includes('VERTISSOLO'))  return '#839192';
+    if (u.includes('CHERNOSSOLO')) return '#2C3E50';
+    if (u.includes('LUVISSOLO'))   return '#D35400';
+    if (u.includes('PLANOSSOLO'))  return '#76B7D0';
+    if (u.includes('ORGANOSSOLO')) return '#1A5276';
+    return '#AAAAAA';
+  }
+
+  /**
+   * Build a projector function: [lon,lat] → [pdfX, pdfY]
+   */
+  static _makeProjector(bbox, mapX, mapY, mapW, mapH) {
+    const [minX, minY, maxX, maxY] = bbox;
+    const rangeX = maxX - minX || 0.001;
+    const rangeY = maxY - minY || 0.001;
+    const scaleX = mapW / rangeX;
+    const scaleY = mapH / rangeY;
+    const scale = Math.min(scaleX, scaleY);
+    const offX = mapX + (mapW - rangeX * scale) / 2;
+    const offY = mapY + mapH - (mapH - rangeY * scale) / 2;
+    return ([lon, lat]) => [offX + (lon - minX) * scale, offY - (lat - minY) * scale];
+  }
+
+  /**
+   * Collect all [lon,lat] coordinates from a GeoJSON geometry or feature
+   */
+  static _getCoords(geom) {
+    if (!geom) return [];
+    const g = geom.geometry || geom; // unwrap Feature
+    const out = [];
+    const walk = (c) => {
+      if (!Array.isArray(c)) return;
+      if (typeof c[0] === 'number') { out.push(c); return; }
+      c.forEach(walk);
+    };
+    if (g.coordinates) walk(g.coordinates);
+    else if (g.geometries) g.geometries.forEach(sub => out.push(...this._getCoords(sub)));
+    return out;
+  }
+
+  /**
+   * Draw GeoJSON geometry rings onto the current pdfkit path (no fill/stroke called here)
+   */
+  static _drawGeomRings(doc, geom, projFn) {
+    if (!geom) return;
+    const g = geom.geometry || geom;
+
+    const drawRing = (ring) => {
+      if (!ring || ring.length < 2) return;
+      const [x0, y0] = projFn(ring[0]);
+      doc.moveTo(x0, y0);
+      for (let i = 1; i < ring.length; i++) {
+        const [px, py] = projFn(ring[i]);
+        doc.lineTo(px, py);
+      }
+      doc.closePath();
+    };
+
+    const drawPoly = (rings) => rings.forEach(drawRing);
+
+    if (g.type === 'Polygon') {
+      drawPoly(g.coordinates);
+    } else if (g.type === 'MultiPolygon') {
+      g.coordinates.forEach(drawPoly);
+    } else if (g.type === 'GeometryCollection') {
+      g.geometries.forEach(sub => this._drawGeomRings(doc, sub, projFn));
+    }
+  }
+
+  /**
+   * Draw a colored soil map with property outline and legend
+   */
+  static _drawSoloMap(doc, soloGeoms, geojson) {
+    // Parse property geometry
+    let propGeom = null;
+    try {
+      const gj = typeof geojson === 'string' ? JSON.parse(geojson) : geojson;
+      if (gj) {
+        if (gj.type === 'FeatureCollection') propGeom = gj.features[0]?.geometry;
+        else if (gj.type === 'Feature') propGeom = gj.geometry;
+        else propGeom = gj;
+      }
+    } catch (e) { /* ignore */ }
+
+    // Parse soil geometries
+    const soilParsed = [];
+    for (const row of soloGeoms) {
+      try {
+        const g = typeof row.geom_json === 'string' ? JSON.parse(row.geom_json) : row.geom_json;
+        if (g) soilParsed.push({ nome: row.nome || 'Solo', percentual: row.percentual || 0, geom: g });
+      } catch (e) { /* skip invalid geoms */ }
+    }
+
+    if (soilParsed.length === 0 && !propGeom) return;
+
+    // Compute bounding box
+    const allCoords = [];
+    soilParsed.forEach(s => allCoords.push(...this._getCoords(s.geom)));
+    if (propGeom) allCoords.push(...this._getCoords(propGeom));
+    if (allCoords.length === 0) return;
+
+    let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+    allCoords.forEach(([lon, lat]) => {
+      if (lon < minLon) minLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lon > maxLon) maxLon = lon;
+      if (lat > maxLat) maxLat = lat;
+    });
+    const padLon = (maxLon - minLon) * 0.08 || 0.001;
+    const padLat = (maxLat - minLat) * 0.08 || 0.001;
+    minLon -= padLon; maxLon += padLon;
+    minLat -= padLat; maxLat += padLat;
+
+    const mapX = 40;
+    const mapW = doc.page.width - 80;
+    const mapH = 220;
+
+    if (doc.y + mapH + 60 > doc.page.height - 40) doc.addPage();
+
+    const mapY = doc.y;
+    const projFn = this._makeProjector([minLon, minLat, maxLon, maxLat], mapX, mapY, mapW, mapH);
+
+    // Background
+    doc.save();
+    doc.rect(mapX, mapY, mapW, mapH).fillColor('#e8f4f8').fill();
+    doc.restore();
+
+    // Draw each soil polygon filled with its color
+    soilParsed.forEach(s => {
+      const color = this._getSoilColor(s.nome);
+      doc.save();
+      this._drawGeomRings(doc, s.geom, projFn);
+      doc.fillColor(color).fill();
+      doc.restore();
+
+      // White border between polygons
+      doc.save();
+      this._drawGeomRings(doc, s.geom, projFn);
+      doc.strokeColor('#ffffff').lineWidth(0.5).stroke();
+      doc.restore();
+    });
+
+    // Draw property outline on top
+    if (propGeom) {
+      doc.save();
+      this._drawGeomRings(doc, propGeom, projFn);
+      doc.strokeColor('#000000').lineWidth(1.5).stroke();
+      doc.restore();
+    }
+
+    // Map frame border
+    doc.save();
+    doc.rect(mapX, mapY, mapW, mapH).strokeColor('#999999').lineWidth(0.5).stroke();
+    doc.restore();
+
+    doc.y = mapY + mapH + 6;
+
+    // Legend
+    const legendBoxSize = 10;
+    const legendColW = 185;
+    const legendCols = Math.max(1, Math.floor(mapW / legendColW));
+    let lx = mapX;
+    let ly = doc.y;
+
+    doc.fontSize(7.5).font('Helvetica');
+    soilParsed.forEach((item, i) => {
+      if (i > 0 && i % legendCols === 0) {
+        ly += 16;
+        lx = mapX;
+      } else if (i > 0) {
+        lx += legendColW;
+      }
+      // Color box
+      doc.save();
+      doc.rect(lx, ly, legendBoxSize, legendBoxSize).fillColor(this._getSoilColor(item.nome)).fill();
+      doc.restore();
+      doc.save();
+      doc.rect(lx, ly, legendBoxSize, legendBoxSize).strokeColor('#666').lineWidth(0.3).stroke();
+      doc.restore();
+      // Label
+      doc.fillColor('black').text(
+        `${item.nome} (${item.percentual}%)`.substring(0, 30),
+        lx + legendBoxSize + 3,
+        ly + 1,
+        { width: legendColW - legendBoxSize - 6, lineBreak: false }
+      );
+    });
+
+    doc.y = ly + 18;
   }
 
   /**
