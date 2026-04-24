@@ -1487,7 +1487,7 @@ app.post('/api/analises', async (req, res) => {
 
     const eclogitesResult = await safeQuery(`
       SELECT id, type as tipo, long_dec as longitude, lat_dec as latitude FROM tectonic_map.eclogites
-      WHERE ${tectonicGeoFilter}
+      WHERE ${tectonicGeoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.eclogites = eclogitesResult.rows;
 
@@ -1498,7 +1498,7 @@ app.post('/api/analises', async (req, res) => {
 
     const kimberlitesResult = await safeQuery(`
       SELECT id, source, age, long_dec as longitude, lat_dec as latitude FROM tectonic_map.kimberlites
-      WHERE ${tectonicGeoFilter}
+      WHERE ${tectonicGeoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.kimberlites = kimberlitesResult.rows;
 
