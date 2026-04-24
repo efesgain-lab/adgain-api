@@ -203,7 +203,12 @@ async function getAnaToken() {
     clearTimeout(timer);
     if (!resp.ok) throw new Error(`ANA auth HTTP ${resp.status}`);
     const data = await resp.json();
-    const token = data?.tokenautenticacao || data?.token || data?.access_token
+    const itm   = data?.items;
+    const token = data?.tokenautenticacao
+      || data?.token || data?.access_token
+      || (typeof itm === 'string' && itm.length > 10 ? itm : null)
+      || itm?.tokenautenticacao || itm?.token || itm?.access_token
+      || (Array.isArray(itm)  && itm[0]?.tokenautenticacao)
       || (Array.isArray(data) && data[0]?.tokenautenticacao);
     if (!token) throw new Error(`ANA token field not found — keys: ${Object.keys(data || {}).join(',')}`);
     _anaToken.value = token;
