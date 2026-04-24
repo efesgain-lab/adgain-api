@@ -229,7 +229,7 @@ async function anaGet(path, params = {}) {
   const timer = setTimeout(() => ctrl.abort(), 15000);
   try {
     const resp = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': '*/*' },
       signal: ctrl.signal,
     });
     clearTimeout(timer);
@@ -479,8 +479,8 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
 
     // Polling (máx 60s)
     let dataPoints = null;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      await new Promise(r => setTimeout(r, 3000));
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise(r => setTimeout(r, 2000));
       const pollResp = await fetch(
         'https://climateserv.servirglobal.net/api/getDataFromRequest/?id=' + requestId,
         { signal: AbortSignal.timeout(15000) }
