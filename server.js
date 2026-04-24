@@ -24,6 +24,23 @@ const pool = new Pool({
 
 const SRID = 4674; // SIRGAS 2000
 
+
+// --- Startup: indices GIST para queries espaciais ---
+async function ensureGistIndexes() {
+  const client = await pool.connect();
+  try {
+    const gc = await client.query('SELECT f_table_schema s, f_table_name t, f_geometry_column c FROM geometry_columns WHERE f_table_schema LIKE ANY(ARRAY['public','incra','car','anm']) AND type NOT ILIKE '%RASTER%'');
+    for (const row of gc.rows) {
+      const tbl = row.s === 'public' ? row.t : row.s + '.' + row.t;
+      const idx = ('gist_' + row.s + '_' + row.t + '_' + row.c).substring(0,63);
+      try { await client.query('CREATE INDEX IF NOT EXISTS ' + idx + ' ON ' + tbl + ' USING GIST (' + row.c + ')'); }
+      catch(ie) {}
+    }
+    console.log('[startup] GIST indices OK:', gc.rows.length);
+  } catch(err) { console.error('[startup] GIST err:', err.message); }
+  finally { client.release(); }
+}
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
@@ -1974,6 +1991,8 @@ app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
+
+ensureGistIndexes().catch(console.error);
 
 // Start server
 app.listen(port, () => {
