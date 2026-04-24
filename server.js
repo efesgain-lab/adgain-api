@@ -35,7 +35,7 @@ const SRID = 4674; // SIRGAS 2000
  * @returns {string} - SQL CASE expression
  */
 function buildGeomFilter(geomColumn, expectedSrid = 4674) {
-  return `CASE WHEN ST_SRID(${geomColumn}) = 0 THEN ST_SetSRID(${geomColumn}, ${expectedSrid}) ELSE ${geomColumn} END`;
+  return `CASE WHEN ST_SRID(${geomColumn}) != ${expectedSrid} THEN ST_SetSRID(${geomColumn}, ${expectedSrid}) ELSE ${geomColumn} END`;
 }
 
 // Approximate bounding boxes [minLng, minLat, maxLng, maxLat] — module-level for reuse
@@ -519,25 +519,13 @@ async function fetchSoilGrids(lat, lng) {
 
   const url = 'https://rest.isric.org/soilgrids/v2.0/properties/query?' + qs.toString();
 
-  let data = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 2000));
-      console.log('[SoilGrids] tentativa', attempt + 1, url.slice(0, 80));
-      const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
-      if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
-      data = await resp.json();
-      break;
-    } catch (e) {
-      console.warn('[SoilGrids] tentativa', attempt + 1, 'erro:', e.message);
-      if (attempt === 2) {
-        return { pendente: false, erro: 'Solo: ' + e.message, camadas: null };
-      }
-    }
-  }
-
   try {
-    // Fatores de conversao SoilGrids -> unidade final
+    console.log('[SoilGrids] fetch', url.slice(0, 80));
+    // Timeout curto: se isric.org nao responder em 8s, falha rapido
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
+    const data = await resp.json();
+
     const factor = { clay: 0.1, sand: 0.1, silt: 0.1, soc: 0.1, phh2o: 0.1, nitrogen: 0.01, bdod: 0.01 };
     const label  = { clay: 'argila_%', sand: 'areia_%', silt: 'silte_%', soc: 'carbono_organico_g_kg', phh2o: 'ph', nitrogen: 'nitrogenio_g_kg', bdod: 'densidade_g_cm3' };
 
@@ -548,23 +536,17 @@ async function fetchSoilGrids(lat, lng) {
         const d   = dep.label;
         const val = dep.values && dep.values.mean;
         if (!camadas[d]) camadas[d] = {};
-        camadas[d][label[layer.name]] = val !== null && val !== undefined
+        camadas[d][label[layer.name]] = (val !== null && val !== undefined)
           ? Math.round(val * factor[layer.name] * 10) / 10
           : null;
       }
     }
-
     return { pendente: false, erro: null, camadas };
   } catch (e) {
-    console.warn('[SoilGrids] parse erro:', e.message);
-    return { pendente: false, erro: 'Solo (parse): ' + e.message, camadas: null };
+    console.warn('[SoilGrids] erro:', e.message);
+    return { pendente: false, erro: 'SoilGrids indisponivel: ' + e.message, camadas: null };
   }
 }
-
-
-/**
- * Safely parse GeoJSON feature
- */
 function parseGeoJSONFeature(geojson) {
   if (typeof geojson === 'string') {
     return JSON.parse(geojson);
