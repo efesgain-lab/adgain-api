@@ -941,7 +941,7 @@ app.post('/api/analises', async (req, res) => {
     // Solo mapa: geometrias simplificadas por tipo de solo (falha graciosamente se demorar)
     try {
       const soloGeomRes = await pool.query(`
-        SELECT nome,
+        SELECT legenda as nome,
           ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Union(ST_Intersection(
             ST_Transform(
               CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -957,13 +957,13 @@ app.post('/api/analises', async (req, res) => {
           ),
           ST_GeomFromGeoJSON($1::jsonb->'geometry')
         )
-        GROUP BY nome
+        GROUP BY legenda
       `, [geojsonStr]);
       const geomMap = {};
       soloGeomRes.rows.forEach(row => { if (row.nome) geomMap[row.nome] = row.geom_json; });
       analyses['9.3_solo'].data = analyses['9.3_solo'].data.map(s => ({
         ...s,
-        geom_json: geomMap[s.nome] || null,
+        geom_json: geomMap[s.nome || s.legenda] || null,
       }));
     } catch (soloGeomErr) {
       console.warn('[analises] solo geoms:', soloGeomErr.message);
