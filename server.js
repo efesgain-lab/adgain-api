@@ -941,11 +941,13 @@ app.post('/api/analises', async (req, res) => {
       // 9.3.1 Solo — geometrias para mapa SVG no painel e relatorio
       try {
         const soloGeomRes = await pool.query(`
-          SELECT legenda as nome,
-            ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Union(ST_Intersection(
+          SELECT
+            legenda,
+            legenda as nome,
+            ST_AsGeoJSON(ST_Union(ST_Intersection(
               CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
               ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-            )), 0.001)) as geom_json
+            ))) as geom_json
           FROM solo.pedo_area
           WHERE ST_Intersects(
             CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -954,9 +956,12 @@ app.post('/api/analises', async (req, res) => {
           GROUP BY legenda
         `, [geojsonStr]);
         const geomMap = {};
-        soloGeomRes.rows.forEach(row => { if (row.nome) geomMap[row.nome] = row.geom_json; });
+        soloGeomRes.rows.forEach(row => {
+          if (row.legenda) geomMap[row.legenda] = row.geom_json;
+        });
         analyses['9.3_solo'].data = analyses['9.3_solo'].data.map(s => ({
-          ...s, geom_json: geomMap[s.nome || s.legenda] || null,
+          ...s,
+          geom_json: geomMap[s.nome || s.legenda] || null,
         }));
       } catch (soloGeomErr) {
         console.warn('[analises] solo geoms:', soloGeomErr.message);
