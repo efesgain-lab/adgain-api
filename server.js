@@ -922,7 +922,7 @@ app.post('/api/analises', async (req, res) => {
     let soloResult = await safeQuery(`
       SELECT
         nom_unidad as codigo,
-        legenda as nome,
+        legenda, legenda as nome,
         ordem, subordem, textura, relevo, componente,
         ROUND(CAST(SUM(ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
