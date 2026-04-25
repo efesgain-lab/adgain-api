@@ -938,6 +938,32 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.3_solo'].data = soloResult.rows;
 
+    // Solo mapa: geometrias simplificadas por tipo de solo (falha graciosamente se demorar)
+    try {
+      const soloGeomRes = await pool.query(`
+        SELECT nome,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Union(ST_Intersection(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_GeomFromGeoJSON($1::jsonb->'geometry')
+          )), 0.0001)) as geom_json
+        FROM solo.pedo_area
+        WHERE ST_Intersects(
+          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_GeomFromGeoJSON($1::jsonb->'geometry')
+        )
+        GROUP BY nome
+      `, [geojsonStr]);
+      const geomMap = {};
+      soloGeomRes.rows.forEach(row => { if (row.nome) geomMap[row.nome] = row.geom_json; });
+      analyses['9.3_solo'].data = analyses['9.3_solo'].data.map(s => ({
+        ...s,
+        geom_json: geomMap[s.nome] || null,
+      }));
+    } catch (soloGeomErr) {
+      console.warn('[analises] solo geoms:', soloGeomErr.message);
+    }
+
+
     // 9.4 Bioma (with percentages)
     // Use CTE with ST_Union to avoid double-counting when multiple polygons share the same bioma name
     analyses['9.4_bioma'] = { nome: 'Bioma', data: [] };
