@@ -1834,35 +1834,46 @@ app.post('/api/relatorio', async (req, res) => {
     // Import reportService
     const reportService = require('./reportService');
 
-        // Query soil polygon geometries for the soil map
+    // Query soil polygon geometries for the map
     let soloGeoms = [];
     if (geojson) {
       try {
-        const geomStr = typeof geojson === 'string' ? geojson : JSON.stringify(geojson);
+        // Normalize: extract raw geometry from Feature/FeatureCollection if needed
+        let geomObj = typeof geojson === 'string' ? JSON.parse(geojson) : geojson;
+        if (geomObj && geomObj.type === 'Feature') geomObj = geomObj.geometry;
+        else if (geomObj && geomObj.type === 'FeatureCollection' && geomObj.features && geomObj.features[0]) {
+          geomObj = geomObj.features[0].geometry;
+        }
+        const geomStr = JSON.stringify(geomObj);
+        console.log('[relatorio] soloGeoms: geom type =', geomObj && geomObj.type, 'len =', geomStr.length);
+
+        // ST_Transform brings table geoms to SRID 4326 (matching ST_GeomFromGeoJSON default)
         const soloQuery = await pool.query(`
           SELECT
             nome,
             ST_AsGeoJSON(ST_Intersection(
-              CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END,
+              ST_Transform(CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END, 4326),
               ST_GeomFromGeoJSON($1)
             )) as geom_json,
             ROUND(CAST(ST_Area(ST_Intersection(
-              CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END,
+              ST_Transform(CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END, 4326),
               ST_GeomFromGeoJSON($1)
             )) / ST_Area(ST_GeomFromGeoJSON($1)) * 100 AS numeric), 2) as percentual
           FROM solo.pedo_area
           WHERE ST_Intersects(
-            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END,
+            ST_Transform(CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, 4674) ELSE geom END, 4326),
             ST_GeomFromGeoJSON($1)
           )
           ORDER BY percentual DESC
         `, [geomStr]);
         soloGeoms = soloQuery.rows;
+        console.log('[relatorio] soloGeoms count:', soloGeoms.length);
       } catch (e) {
-        console.warn('soloGeoms query error:', e.message);
+        console.error('[relatorio] soloGeoms error:', e.message);
       }
+    } else {
+      console.log('[relatorio] geojson not provided — soil map skipped');
     }
-
 const pdfBuffer = await reportService.generatePDF({
       analyses: analyses,
       municipio: municipio,
