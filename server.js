@@ -945,12 +945,12 @@ app.post('/api/analises', async (req, res) => {
             legenda,
             legenda as nome,
             ST_AsGeoJSON(ST_Union(ST_Intersection(
-              CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+              CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
               ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
             ))) as geom_json
           FROM solo.pedo_area
           WHERE ST_Intersects(
-            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
           )
           GROUP BY legenda
