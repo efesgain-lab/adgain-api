@@ -1021,6 +1021,31 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.5_geologia'].data = geologiaResult.rows;
 
+    // 9.5.1 Geologia — geometrias para mapa SVG
+    try {
+      const geoloGeomRes = await pool.query(`
+        SELECT "NOME" as nome,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Union(ST_Intersection(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          )), 0.001)) as geom_json
+        FROM geologia_litologia.litoestratigafia_br
+        WHERE ST_Intersects(
+          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        )
+        GROUP BY "NOME"
+      `, [geojsonStr]);
+      const geomGeoMap = {};
+      geoloGeomRes.rows.forEach(row => { if (row.nome) geomGeoMap[row.nome] = row.geom_json; });
+      analyses['9.5_geologia'].data = analyses['9.5_geologia'].data.map(g => ({
+        ...g,
+        geom_json: geomGeoMap[g.nome] || null,
+      }));
+    } catch (geoloGeomErr) {
+      console.warn('[analises] geologia geoms:', geoloGeomErr.message);
+    }
+
     // 9.5b — pontos/ocorrências/estruturas são preenchidos pelo bloco 9.14 mais abaixo
     analyses['9.5_geologia'].pontos      = [];
     analyses['9.5_geologia'].ocorrencias = [];
