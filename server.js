@@ -943,12 +943,18 @@ app.post('/api/analises', async (req, res) => {
       const soloGeomRes = await pool.query(`
         SELECT nome,
           ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Union(ST_Intersection(
-            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_Transform(
+              CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+              4326
+            ),
             ST_GeomFromGeoJSON($1::jsonb->'geometry')
-          )), 0.0001)) as geom_json
+          )), 0.001)) as geom_json
         FROM solo.pedo_area
         WHERE ST_Intersects(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_Transform(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            4326
+          ),
           ST_GeomFromGeoJSON($1::jsonb->'geometry')
         )
         GROUP BY nome
@@ -961,6 +967,7 @@ app.post('/api/analises', async (req, res) => {
       }));
     } catch (soloGeomErr) {
       console.warn('[analises] solo geoms:', soloGeomErr.message);
+    }GeomErr.message);
     }
 
 
