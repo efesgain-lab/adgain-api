@@ -1472,54 +1472,66 @@ app.post('/api/analises', async (req, res) => {
       },
     };
 
-    // Afloramentos geológicos (geol_ponto) — SRID 4674
+    // Helper para normalizar SRID e retornar geom_json simplificado (linhas)
+    const geomLinhaJson = `ST_AsGeoJSON(ST_SimplifyPreserveTopology(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 0.001))`;
+    const geomPtoJson   = `ST_AsGeoJSON(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END)`;
+    const geoIntersect  = `ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
+
+    // Afloramentos geológicos (geol_ponto) — com geom_json
     let geolPontoResult = await safeQuery(`
-      SELECT cd_fcim, ds_afl1, nm_unidade as nome, tipo_pto as tipo, fonte
+      SELECT cd_fcim, ds_afl1, nm_unidade as nome, tipo_pto as tipo, fonte,
+        ${geomPtoJson} as geom_json
       FROM geologia_litologia.geol_ponto
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ${geoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.pontos = geolPontoResult.rows;
-    analyses['9.5_geologia'].pontos = geolPontoResult.rows.map(r => ({ cod_fcim: r.cd_fcim, ds_afl1: r.ds_afl1 }));
+    analyses['9.5_geologia'].pontos = geolPontoResult.rows;
 
-    // Ocorrências minerais — tabela com acento "ocorrências_br", SRID 4326
+    // Ocorrências minerais — SRID 4326, com geom_json
     let ocorrenciasResult = await safeQuery(`
-      SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras
+      SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras,
+        ST_AsGeoJSON(geom) as geom_json
       FROM geologia_litologia."ocorrências_br"
-      WHERE geom && ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AND ST_Intersects(geom, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326))
+      WHERE ST_Intersects(geom, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.ocorrencias = ocorrenciasResult.rows;
     analyses['9.5_geologia'].ocorrencias = ocorrenciasResult.rows;
 
-    // Dobras — SRID 4674
+    // Dobras — com geom_json simplificado
     let geolLinhaDbraResult = await safeQuery(`
-      SELECT cd_fcim, classif, caract_eix, caime_eix
+      SELECT cd_fcim, classif, caract_eix, caime_eix,
+        ${geomLinhaJson} as geom_json
       FROM geologia_litologia.geol_linha_dobra
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ${geoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_dobra = geolLinhaDbraResult.rows;
     analyses['9.5_geologia'].dobras = geolLinhaDbraResult.rows;
 
-    // Falhas — SRID 4674
+    // Falhas — com geom_json simplificado
     let geolLinhaFalhaResult = await safeQuery(`
-      SELECT cd_fcim, classif, forma, estm_merg, sentido
+      SELECT cd_fcim, classif, forma, estm_merg, sentido,
+        ${geomLinhaJson} as geom_json
       FROM geologia_litologia.geol_linha_falha
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ${geoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_falha = geolLinhaFalhaResult.rows;
     analyses['9.5_geologia'].falhas = geolLinhaFalhaResult.rows;
 
-    // Fraturas — SRID 4674
+    // Fraturas — com geom_json simplificado
     let geolLinhaFraturaResult = await safeQuery(`
-      SELECT cd_fcim, classif, forma, mergulho
+      SELECT cd_fcim, classif, forma, mergulho,
+        ${geomLinhaJson} as geom_json
       FROM geologia_litologia.geol_linha_fratura
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ${geoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.linhas_fratura = geolLinhaFraturaResult.rows;
     analyses['9.5_geologia'].fraturas = geolLinhaFraturaResult.rows;
 
-    // Tectônicas — todas as tabelas do schema tectonic_map
-    const tectonicGeoFilter = `ST_DWithin(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 1.0)`;
-    const tectonicGeoIntersect = `geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
+    // Tectônicas — todas as tabelas do schema tectonic_map com geom_json
+    const tectonicGeoFilter    = `ST_DWithin(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 1.0)`;
+    const tectonicGeoIntersect = `ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
+    const tecGeomLinha = `ST_AsGeoJSON(ST_SimplifyPreserveTopology(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 0.01))`;
+    const tecGeomPto   = `ST_AsGeoJSON(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END)`;
 
     const plateBoundaryResult = await safeQuery(`
       SELECT id, feature, type as tipo FROM tectonic_map.plate_boundary WHERE ${tectonicGeoFilter}
@@ -1527,44 +1539,52 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.14_analises_adicionais'].tectonicas.plate_boundary = plateBoundaryResult.rows;
 
     const continentStructureResult = await safeQuery(`
-      SELECT id, type as tipo, name FROM tectonic_map.continent_structure WHERE ${tectonicGeoFilter}
+      SELECT id, type as tipo, name, ${tecGeomLinha} as geom_json
+      FROM tectonic_map.continent_structure WHERE ${tectonicGeoFilter}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.continent_structure = continentStructureResult.rows;
 
     const cratonResult = await safeQuery(`
-      SELECT id, type as tipo FROM tectonic_map.craton_terranes_limits WHERE ${tectonicGeoFilter}
+      SELECT id, type as tipo, ${tecGeomLinha} as geom_json
+      FROM tectonic_map.craton_terranes_limits WHERE ${tectonicGeoFilter}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.craton_terranes_limits = cratonResult.rows;
 
     const dykesResult = await safeQuery(`
-      SELECT id, type as tipo, age FROM tectonic_map.dykes WHERE ${tectonicGeoIntersect}
+      SELECT id, type as tipo, age, ${tecGeomLinha} as geom_json
+      FROM tectonic_map.dykes WHERE ${tectonicGeoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.dykes = dykesResult.rows;
 
     const eclogitesResult = await safeQuery(`
-      SELECT id, type as tipo, long_dec as longitude, lat_dec as latitude FROM tectonic_map.eclogites
-      WHERE ${tectonicGeoIntersect}
+      SELECT id, type as tipo, long_dec as longitude, lat_dec as latitude,
+        ${tecGeomPto} as geom_json
+      FROM tectonic_map.eclogites WHERE ${tectonicGeoFilter}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.eclogites = eclogitesResult.rows;
 
     const isopachsResult = await safeQuery(`
-      SELECT id, type as tipo, depth_base FROM tectonic_map.isopachs WHERE ${tectonicGeoIntersect}
+      SELECT id, type as tipo, depth_base, ${tecGeomLinha} as geom_json
+      FROM tectonic_map.isopachs WHERE ${tectonicGeoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.isopachs = isopachsResult.rows;
 
     const kimberlitesResult = await safeQuery(`
-      SELECT id, source, age, long_dec as longitude, lat_dec as latitude FROM tectonic_map.kimberlites
-      WHERE ${tectonicGeoIntersect}
+      SELECT id, source, age, long_dec as longitude, lat_dec as latitude,
+        ${tecGeomPto} as geom_json
+      FROM tectonic_map.kimberlites WHERE ${tectonicGeoFilter}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.kimberlites = kimberlitesResult.rows;
 
     const paleozResult = await safeQuery(`
-      SELECT id, type as tipo FROM tectonic_map.paleoz_erosional_border WHERE ${tectonicGeoIntersect}
+      SELECT id, type as tipo, ${tecGeomLinha} as geom_json
+      FROM tectonic_map.paleoz_erosional_border WHERE ${tectonicGeoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.paleoz_erosional_border = paleozResult.rows;
 
     const sutureResult = await safeQuery(`
-      SELECT id, type as tipo, obs FROM tectonic_map.suture_zones WHERE ${tectonicGeoIntersect}
+      SELECT id, type as tipo, obs, ${tecGeomLinha} as geom_json
+      FROM tectonic_map.suture_zones WHERE ${tectonicGeoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.suture_zones = sutureResult.rows;
 
@@ -1616,6 +1636,20 @@ app.post('/api/analises', async (req, res) => {
         falhas:      analyses['9.5_geologia'].falhas,
         fraturas:    analyses['9.5_geologia'].fraturas,
       },
+      // Chaves flat para o mapa SVG do frontend (geoloMapaSvg getter)
+      geol_ponto:              analyses['9.5_geologia'].pontos,
+      ocorrencias_br:          analyses['9.5_geologia'].ocorrencias,
+      geol_linha_dobra:        analyses['9.5_geologia'].dobras,
+      geol_linha_falha:        analyses['9.5_geologia'].falhas,
+      geol_linha_fratura:      analyses['9.5_geologia'].fraturas,
+      continent_structure:     analyses['9.14_analises_adicionais'].tectonicas.continent_structure,
+      craton_terranes_limits:  analyses['9.14_analises_adicionais'].tectonicas.craton_terranes_limits,
+      dykes:                   analyses['9.14_analises_adicionais'].tectonicas.dykes,
+      eclogites:               analyses['9.14_analises_adicionais'].tectonicas.eclogites,
+      isopachs:                analyses['9.14_analises_adicionais'].tectonicas.isopachs,
+      kimberlites:             analyses['9.14_analises_adicionais'].tectonicas.kimberlites,
+      paleoz_erosional_border: analyses['9.14_analises_adicionais'].tectonicas.paleoz_erosional_border,
+      suture_zones:            analyses['9.14_analises_adicionais'].tectonicas.suture_zones,
       mineracao:            { processos_anm: analyses['9.6_mineracao'].processes, ocorrencias: analyses['9.6_mineracao'].occurrences },
       embargos:             analyses['9.7_embargos'].data,
       terras_indigenas:     analyses['9.8_terras_indigenas'].data,
