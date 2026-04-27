@@ -544,20 +544,22 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
 
   // FALLBACK: ERA5-Land via Open-Meteo (0.1 deg / 10 km)
   try {
-    const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat.toFixed(4) + '&longitude=' + lng.toFixed(4) + '&start_date=1994-01-01&end_date=2024-12-31&monthly=precipitation_sum&timezone=UTC';
+    const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat.toFixed(4) + '&longitude=' + lng.toFixed(4) + '&start_date=1994-01-01&end_date=2024-12-31&daily=precipitation_sum&timezone=UTC';
     const res = await cFetch(url, {}, 20000);
     if (!res.ok) throw new Error('Open-Meteo ' + res.status);
     const data = await res.json();
-    if (!data.monthly?.precipitation_sum) throw new Error('no data');
-    const times = data.monthly.time, vals = data.monthly.precipitation_sum;
-    const mo = {}, yr = {};
+    if (!data.daily?.precipitation_sum) throw new Error('no data');
+        const times = data.daily.time, vals = data.daily.precipitation_sum;
+    const mo = {}, yr = {}, accum = {};
     for (let i = 0; i < times.length; i++) {
-      const [y, ms] = times[i].split('-'), m = parseInt(ms), val = vals[i] ?? 0;
-      (mo[m] = mo[m] || []).push(val);
+      const p = times[i].split('-'), y = p[0], m = parseInt(p[1]), val = vals[i] ?? 0;
+      const key = y + '-' + m;
+      if (!accum[key]) accum[key] = { y, m, sum: 0 };
+      accum[key].sum += val;
       yr[y] = (yr[y] || 0) + val;
     }
-    console.log('[ERA5-Land] OK');
-    return mkResult(mo, yr, 'ERA5-Land / Open-Meteo (1994-2024) 0.1 grau / 10 km');
+    for (const { y, m, sum } of Object.values(accum)) { (mo[m] = mo[m] || []).push(sum); }
+    return mkResult(mo, yr, 'ERA5/Open-Meteo (1994-2024) 0.25 grau / 25 km');
   } catch(e) {
     console.error('[ERA5-Land] failed:', e.message);
     return { pendente: false, erro: 'Pluviometria indisponivel: ' + e.message, resumo: null, media_mensal: [], total_anual: [] };
