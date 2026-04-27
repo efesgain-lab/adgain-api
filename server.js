@@ -471,64 +471,96 @@ async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
 // NASA POWER — precipitação histórica mensal (MERRA-2 PRECTOTCORR)
 // ____________________________________________________________________________
 async function fetchPluviometriaCHIRPS(lat, lng) {
-  const MONTHS_PT    = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const endYear      = new Date().getFullYear() - 1;   // ERA5: dados disponíveis até ~3 meses atrás
-  const startYear    = endYear - 29;                    // 30 anos de histórico
+  const MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  function mkBuckets(rows, dateKey, valKey) {
+    const mo = {}, yr = {};
+    for (const r of rows) {
+      const d = new Date(r[dateKey] || '');
+      if (isNaN(d.getTime())) continue;
+      const val = parseFloat(valKey ? r[valKey] : (r.value?.avg ?? r.value?.sum ?? r.value ?? 0));
+      if (isNaN(val) || val < 0) continue;
+      const m = d.getMonth() + 1, y = String(d.getFullYear());
+      (mo[m] = mo[m] || []).push(val);
+      yr[y] = (yr[y] || 0) + val;
+    }
+    return { mo, yr };
+  }
+  function mkResult(mo, yr, fonte) {
+    const mm = Array.from({ length: 12 }, (_, i) => {
+      const vals = mo[i+1] || [];
+      return { mes: MESES[i], media_mm: vals.length ? Math.round(vals.reduce((s,v)=>s+v,0)/vals.length) : 0 };
+    });
+    const ta = Object.entries(yr).map(([ano,total_mm])=>({ ano, total_mm: Math.round(total_mm) })).sort((a,b)=>a.ano.localeCompare(b.ano));
+    const med = ta.length ? Math.round(ta.reduce((s,a)=>s+a.total_mm,0)/ta.length) : 0;
+    return { pendente: false, erro: null,
+      resumo: { media_anual_mm: med,
+        mes_mais_chuvoso: [...mm].sort((a,b)=>b.media_mm-a.media_mm)[0]||null,
+        mes_mais_seco: [...mm].sort((a,b)=>a.media_mm-b.media_mm)[0]||null,
+        fonte, latitude: lat.toFixed(4), longitude: lng.toFixed(4) },
+      media_mensal: mm, total_anual: ta };
+  }
+  function cFetch(url, opts, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
+  }
 
+  // PRIMARY: CHIRPS v2.0 via ClimateSERV (0.05 deg / 5 km, 1994-2024)
   try {
-    // Open-Meteo Historical Archive — parâmetro correto é "daily", não "monthly"
-    const url = 'https://archive-api.open-meteo.com/v1/archive'
-      + '?latitude='   + lat.toFixed(4)
-      + '&longitude='  + lng.toFixed(4)
-      + '&start_date=' + startYear + '-01-01'
-      + '&end_date='   + endYear   + '-12-31'
-      + '&daily=precipitation_sum'
-      + '&timezone=UTC';
-
-    const ctrl  = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 35000); // 35s para 30 anos de dados diários
-    const resp  = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!resp.ok) throw new Error('Open-Meteo HTTP ' + resp.status);
-    const data = await resp.json();
-
-    const times  = (data.daily || {}).time              || []; // ['1994-01-01', ...]
-    const precip = (data.daily || {}).precipitation_sum || [];
-
-    // Agrega diário → total mensal por ano, depois média dos 30 anos por mês
-    const yearMonthTotals = {};
-    times.forEach((t, i) => {
-      if (precip[i] == null) return;
-      const key = t.slice(0, 7); // 'YYYY-MM'
-      yearMonthTotals[key] = (yearMonthTotals[key] || 0) + precip[i];
+    const body = new URLSearchParams({
+      datatype: '26', begintime: '01/01/1994', endtime: '12/31/2024',
+      intervaltype: '0', operationtype: '5', callback: '', isZip_FILE: 'false',
+      geometry: JSON.stringify({ type: 'Point', coordinates: [+lng.toFixed(5), +lat.toFixed(5)] })
     });
+    const sr = await cFetch('https://climateserv.servirglobal.net/api/submitDataRequest/', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, 12000);
+    if (!sr.ok) throw new Error('submit ' + sr.status);
+    const raw = await sr.json();
+    const jid = Array.isArray(raw) ? raw[0] : raw;
+    if (!jid || jid === 'null') throw new Error('null job');
+    console.log('[CHIRPS] job=' + jid);
+    const dl = Date.now() + 25000;
+    let done = false;
+    while (Date.now() < dl) {
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const pr = await cFetch('https://climateserv.servirglobal.net/api/getDataRequestProgress/?id=' + encodeURIComponent(String(jid)), {}, 8000);
+        const pg = await pr.json();
+        const pct = Array.isArray(pg) ? (pg[0]?.progress ?? 0) : (pg?.progress ?? 0);
+        if (pct >= 100) { done = true; break; }
+      } catch(e) { console.warn('[CHIRPS] poll', e.message); }
+    }
+    if (!done) throw new Error('timeout');
+    const dr = await cFetch('https://climateserv.servirglobal.net/api/getDataFromRequest/?id=' + encodeURIComponent(String(jid)), {}, 10000);
+    if (!dr.ok) throw new Error('getData ' + dr.status);
+    const data = await dr.json();
+    const rows = Array.isArray(data) ? data : (data.data || data.value || []);
+    if (!rows.length) throw new Error('empty');
+    const { mo, yr } = mkBuckets(rows, 'date', null);
+    console.log('[CHIRPS] OK rows=' + rows.length);
+    return mkResult(mo, yr, 'CHIRPS v2.0 (1994-2024) 0.05 grau / 5 km');
+  } catch(e) {
+    console.warn('[CHIRPS] ClimateSERV failed:', e.message, '-> ERA5-Land fallback');
+  }
 
-    const monthSums  = new Array(12).fill(0);
-    const monthCount = new Array(12).fill(0);
-    Object.entries(yearMonthTotals).forEach(([key, total]) => {
-      const m = parseInt(key.split('-')[1], 10) - 1; // 0-11
-      monthSums[m]  += total;
-      monthCount[m] += 1;
-    });
-
-    const media_mensal = MONTHS_PT.map((nome, i) => ({
-      mes: nome,
-      mm:  monthCount[i] > 0 ? Math.round(monthSums[i] / monthCount[i] * 10) / 10 : null
-    }));
-    const total_anual        = media_mensal.reduce((s, m) => s + (m.mm || 0), 0);
-    const media_anual_30anos = Math.round(total_anual * 10) / 10;
-
-    console.log('[Open-Meteo] OK lat=' + lat.toFixed(3) + ' anual=' + media_anual_30anos + 'mm');
-    return {
-      pendente: false,
-      fonte: 'ERA5/Open-Meteo (' + startYear + '-' + endYear + ')',
-      media_mensal,
-      total_anual:       Math.round(total_anual * 10) / 10,
-      media_anual_30anos
-    };
-  } catch (e) {
-    console.warn('[Open-Meteo] erro:', e.message);
-    return { pendente: false, erro: 'Chuva: ' + e.message, media_mensal: null, total_anual: null, media_anual_30anos: null };
+  // FALLBACK: ERA5-Land via Open-Meteo (0.1 deg / 10 km)
+  try {
+    const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat.toFixed(4) + '&longitude=' + lng.toFixed(4) + '&start_date=1994-01-01&end_date=2024-12-31&monthly=precipitation_sum&timezone=auto&models=era5_land';
+    const res = await cFetch(url, {}, 20000);
+    if (!res.ok) throw new Error('Open-Meteo ' + res.status);
+    const data = await res.json();
+    if (!data.monthly?.precipitation_sum) throw new Error('no data');
+    const times = data.monthly.time, vals = data.monthly.precipitation_sum;
+    const mo = {}, yr = {};
+    for (let i = 0; i < times.length; i++) {
+      const [y, ms] = times[i].split('-'), m = parseInt(ms), val = vals[i] ?? 0;
+      (mo[m] = mo[m] || []).push(val);
+      yr[y] = (yr[y] || 0) + val;
+    }
+    console.log('[ERA5-Land] OK');
+    return mkResult(mo, yr, 'ERA5-Land / Open-Meteo (1994-2024) 0.1 grau / 10 km');
+  } catch(e) {
+    console.error('[ERA5-Land] failed:', e.message);
+    return { pendente: false, erro: 'Pluviometria indisponivel: ' + e.message, resumo: null, media_mensal: [], total_anual: [] };
   }
 }
 
