@@ -1642,10 +1642,10 @@ app.post('/api/analises', async (req, res) => {
         pluviometria = {
           pendente: false,
           erro: chirpsResult.erro || null,
-          fonte: chirpsResult.fonte || null,
-          media_mensal: chirpsResult.media_mensal || null,
+                      fonte: chirpsResult.resumo?.fonte || chirpsResult.fonte || null,
+                      media_mensal: (chirpsResult.media_mensal || []).map(m => ({ mes: m.mes, mm: m.media_mm ?? m.mm ?? 0 })),
           total_anual: chirpsResult.total_anual || null,
-          media_anual_30anos: chirpsResult.media_anual_30anos || null,
+                      media_anual_30anos: chirpsResult.resumo?.media_anual_mm || chirpsResult.media_anual_30anos || null,
         };
         // fix: computa resumo para o frontend
         if (pluviometria && pluviometria.media_mensal && pluviometria.media_mensal.length > 0) {
