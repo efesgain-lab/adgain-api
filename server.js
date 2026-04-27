@@ -1647,6 +1647,24 @@ app.post('/api/analises', async (req, res) => {
           total_anual: chirpsResult.total_anual || null,
           media_anual_30anos: chirpsResult.media_anual_30anos || null,
         };
+        // fix: computa resumo para o frontend
+        if (pluviometria && pluviometria.media_mensal && pluviometria.media_mensal.length > 0) {
+          const _totais = pluviometria.total_anual || [];
+          const _mediaAnual = _totais.length > 0
+            ? Math.round(_totais.reduce((s, a) => s + a.total_mm, 0) / _totais.length)
+            : (pluviometria.media_anual_30anos || 0);
+          const _sorted = [...pluviometria.media_mensal].sort((a, b) => b.media_mm - a.media_mm);
+          const _pluvLat = centroidForPluvio ? centroidForPluvio[1] : 0;
+          const _pluvLng = centroidForPluvio ? centroidForPluvio[0] : 0;
+          pluviometria.resumo = {
+            media_anual_mm: _mediaAnual,
+            mes_mais_chuvoso: _sorted[0] || null,
+            mes_mais_seco:    _sorted[_sorted.length - 1] || null,
+            fonte: pluviometria.fonte || 'CHIRPS/ERA5 (1994-2024)',
+            latitude:  _pluvLat ? parseFloat(_pluvLat.toFixed(4)) : 0,
+            longitude: _pluvLng ? parseFloat(_pluvLng.toFixed(4)) : 0,
+          };
+        }
 
         solo = soilResult;
       }
