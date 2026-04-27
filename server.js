@@ -518,7 +518,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
     const jid = Array.isArray(raw) ? raw[0] : raw;
     if (!jid || jid === 'null') throw new Error('null job');
     console.log('[CHIRPS] job=' + jid);
-    const dl = Date.now() + 25000;
+    const dl = Date.now() + 45000;
     let done = false;
     while (Date.now() < dl) {
       await new Promise(r => setTimeout(r, 3000));
@@ -544,7 +544,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
 
   // FALLBACK: ERA5-Land via Open-Meteo (0.1 deg / 10 km)
   try {
-    const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat.toFixed(4) + '&longitude=' + lng.toFixed(4) + '&start_date=1994-01-01&end_date=2024-12-31&monthly=precipitation_sum&timezone=auto&models=era5_land';
+    const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat.toFixed(4) + '&longitude=' + lng.toFixed(4) + '&start_date=1994-01-01&end_date=2024-12-31&monthly=precipitation_sum&timezone=UTC';
     const res = await cFetch(url, {}, 20000);
     if (!res.ok) throw new Error('Open-Meteo ' + res.status);
     const data = await res.json();
