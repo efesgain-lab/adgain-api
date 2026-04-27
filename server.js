@@ -542,25 +542,28 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
     console.warn('[CHIRPS] ClimateSERV failed:', e.message, '-> ERA5-Land fallback');
   }
 
-  // FALLBACK: ERA5-Land via Open-Meteo (0.1 deg / 10 km)
+    // FALLBACK: NASA POWER API (PRECTOTCORR, 0.5 deg / 55 km, 1984-present)
+  // Designed for server/research access — no IP restrictions, free, no auth
   try {
-    const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat.toFixed(4) + '&longitude=' + lng.toFixed(4) + '&start_date=1994-01-01&end_date=2024-12-31&daily=precipitation_sum&timezone=UTC';
-    const res = await cFetch(url, {}, 20000);
-    if (!res.ok) throw new Error('Open-Meteo ' + res.status);
+    const baseUrl = 'https://power.larc.nasa.gov/api/temporal/monthly/point';
+    const qp = 'parameters=PRECTOTCORR&community=RE&format=JSON&start=1994&end=2024';
+    const url = baseUrl + '?' + qp + '&longitude=' + lng.toFixed(4) + '&latitude=' + lat.toFixed(4);
+    const res = await cFetch(url, {}, 30000);
+    if (!res.ok) throw new Error('NASA POWER ' + res.status);
     const data = await res.json();
-    if (!data.daily?.precipitation_sum) throw new Error('no data');
-        const times = data.daily.time, vals = data.daily.precipitation_sum;
-    const mo = {}, yr = {}, accum = {};
-    for (let i = 0; i < times.length; i++) {
-      const p = times[i].split('-'), y = p[0], m = parseInt(p[1]), val = vals[i] ?? 0;
-      const key = y + '-' + m;
-      if (!accum[key]) accum[key] = { y, m, sum: 0 };
-      accum[key].sum += val;
+    const param = data.properties?.parameter?.PRECTOTCORR;
+    if (!param) throw new Error('NASA POWER: PRECTOTCORR ausente');
+    const mo = {}, yr = {};
+    for (const [ym, mmDay] of Object.entries(param)) {
+      if (mmDay === null || mmDay < -900) continue; // skip fill values (-999)
+      const y = ym.substring(0, 4), m = parseInt(ym.substring(4, 6));
+      const days = new Date(parseInt(y), m, 0).getDate();
+      const val = mmDay * days; // mm/day -> monthly total mm
+      (mo[m] = mo[m] || []).push(val);
       yr[y] = (yr[y] || 0) + val;
     }
-    for (const { y, m, sum } of Object.values(accum)) { (mo[m] = mo[m] || []).push(sum); }
-    return mkResult(mo, yr, 'ERA5/Open-Meteo (1994-2024) 0.25 grau / 25 km');
-  } catch(e) {
+    return mkResult(mo, yr, 'NASA POWER (1994-2024) 0.5 grau / 55 km');
+} catch(e) {
     console.error('[ERA5-Land] failed:', e.message);
     return { pendente: false, erro: 'Pluviometria indisponivel: ' + e.message, resumo: null, media_mensal: [], total_anual: [] };
   }
