@@ -1,4 +1,4 @@
-require('dotenv').config()
+require('dotenv').config() // init
    
 const express = require('express');
 const cors = require('cors');
@@ -1655,44 +1655,22 @@ app.post('/api/analises', async (req, res) => {
       pluviometria = { pendente: false, erro: 'Erro interno: ' + e.message, media_mensal: null };
     }
 
-        // 9.16 SoilGrids v2.0 — propriedades granulométricas (clay, sand, silt, pH, OC, BD)
-    let soilGrids = null;
-    try {
-      const centroidForSoil = municipio.centroid ? JSON.parse(municipio.centroid) : null;
-      if (centroidForSoil) {
-        const sg_lat = centroidForSoil.coordinates[1];
-        const sg_lon = centroidForSoil.coordinates[0];
-        const sgUrl = `https://rest.isric.org/soilgrids/v2.0/properties/query?lon=${sg_lon}&lat=${sg_lat}&property=clay&property=sand&property=silt&property=phh2o&property=soc&property=bdod&depth=0-5cm&value=mean`;
-        const sgRes = await fetch(sgUrl, { signal: AbortSignal.timeout(15000) });
-        if (sgRes.ok) {
-          const sgData = await sgRes.json();
-          const layers = sgData?.properties?.layers || [];
-          const getVal = (name) => {
-            const layer = layers.find(l => l.name === name);
-            return layer?.depths?.[0]?.values?.mean ?? null;
-          };
-          const clay_raw  = getVal('clay');
-          const sand_raw  = getVal('sand');
-          const silt_raw  = getVal('silt');
-          const ph_raw    = getVal('phh2o');
-          const soc_raw   = getVal('soc');
-          const bdod_raw  = getVal('bdod');
+        // 9.16 SoilGrids v2.0 - reutiliza fetchSoilGrids (evita 2a chamada ao ISRIC)
+        let soilGrids = null;
+        if (solo && solo.camadas && solo.camadas['0-5cm']) {
+          const d = solo.camadas['0-5cm'];
           soilGrids = {
-            clayPercent:   clay_raw  != null ? +(clay_raw  / 10).toFixed(1)  : null,
-            sandPercent:   sand_raw  != null ? +(sand_raw  / 10).toFixed(1)  : null,
-            siltPercent:   silt_raw  != null ? +(silt_raw  / 10).toFixed(1)  : null,
-            ph:            ph_raw    != null ? +(ph_raw    / 10).toFixed(1)  : null,
-            organicCarbon: soc_raw   != null ? +(soc_raw   / 10).toFixed(2)  : null,
-            bulkDensity:   bdod_raw  != null ? +(bdod_raw  / 100).toFixed(2) : null,
+            clayPercent:   d['argila_%']              ?? null,
+            sandPercent:   d['areia_%']               ?? null,
+            siltPercent:   d['silte_%']               ?? null,
+            ph:            d['ph']                    ?? null,
+            organicCarbon: d['carbono_organico_g_kg'] ?? null,
+            bulkDensity:   d['densidade_g_cm3']       ?? null,
             source: 'SoilGrids v2.0 (ISRIC)',
             depth: '0-5cm',
           };
-          console.log('[SoilGrids] OK:', soilGrids);
+          console.log('[SoilGrids] OK (reused):', soilGrids);
         }
-      }
-    } catch (e) {
-      console.warn('[SoilGrids] Erro:', e.message);
-    }
 
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
     const centroidParsed = municipio.centroid ? JSON.parse(municipio.centroid) : null;
