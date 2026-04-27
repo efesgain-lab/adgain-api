@@ -557,6 +557,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
     for (const [ym, mmDay] of Object.entries(param)) {
       if (mmDay === null || mmDay < -900) continue; // skip fill values (-999)
       const y = ym.substring(0, 4), m = parseInt(ym.substring(4, 6));
+      if (m < 1 || m > 12) continue; // skip annual summary entries
       const days = new Date(parseInt(y), m, 0).getDate();
       const val = mmDay * days; // mm/day -> monthly total mm
       (mo[m] = mo[m] || []).push(val);
