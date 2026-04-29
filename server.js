@@ -1232,22 +1232,113 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].cursos_agua_count = parseInt(cursosResult.rows[0]?.total || 0);
     analyses['9.10_hidrografia'].rica_em_agua = analyses['9.10_hidrografia'].cursos_agua_count > 5;
 
-    // Padrao de drenagem (hidrografia.geoft_bho_2017_curso_dagua) — analise em raio de 5km
+        // Padrao de drenagem — analise tecnica combinada: azimute + convergencia + terreno (25km do centroide)
     const RAIO_DRENAGEM_KM = 25;
+
+    // Q1: Estatisticas de azimute, indice de convergencia e bimodalidade direcional
     const padraoAgg = await safeQuery(`
       WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
-      buffered AS (SELECT ST_Buffer(ST_Centroid(g)::geography, ${RAIO_DRENAGEM_KM}*1000)::geometry AS bg FROM parcel),
+      centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
+      buffer25 AS (
+        SELECT ST_Buffer(c::geography, ${RAIO_DRENAGEM_KM * 1000})::geometry AS bg FROM centroid_pt
+      ),
       courses AS (
-        SELECT MOD(degrees(ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom)))::numeric, 180::numeric) AS az
-        FROM hidrografia.geoft_bho_2017_curso_dagua c, buffered b
-        WHERE c.geom && b.bg AND ST_Intersects(c.geom, b.bg)
+        SELECT
+          ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom))                         AS az_full,
+          MOD(degrees(ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom)))::numeric, 180) AS az_norm,
+          ST_Azimuth(ST_Centroid(c.geom), (SELECT cp.c FROM centroid_pt cp))              AS bear_ctr,
+          ST_Length(c.geom::geography) / 1000.0                                           AS len_km
+        FROM hidrografia.geoft_bho_2017_curso_dagua c
+        WHERE ST_Intersects(c.geom, (SELECT bg FROM buffer25))
+      ),
+      global_stats AS (
+        SELECT
+          COUNT(*)                                                                    AS total,
+          ROUND(COALESCE(STDDEV(az_norm), 0)::numeric, 1)                           AS std_az,
+          -- Indice de convergencia: +1 = centrípeta, -1 = centrífuga, 0 = tangencial
+          ROUND(COALESCE(AVG(cos(az_full - bear_ctr)), 0)::numeric, 3)             AS mean_conv,
+          -- Tangencialidade: alto = fluxo ao redor do centroide (anelar)
+          ROUND(COALESCE(AVG(ABS(sin(az_full - bear_ctr))), 0)::numeric, 3)        AS mean_tang,
+          COALESCE(SUM(len_km), 0)                                                  AS total_len_km
+        FROM courses
+      ),
+      az_histogram AS (
+        SELECT (az_norm::int / 10) * 10 AS bin, COUNT(*) AS cnt FROM courses GROUP BY 1
+      ),
+      ranked_bins AS (
+        SELECT bin, cnt, ROW_NUMBER() OVER (ORDER BY cnt DESC) AS rn FROM az_histogram
+      ),
+      top2 AS (
+        SELECT
+          SUM(CASE WHEN rn = 1 THEN bin ELSE 0 END) AS bin1,
+          SUM(CASE WHEN rn = 2 THEN bin ELSE 0 END) AS bin2,
+          SUM(CASE WHEN rn = 1 THEN cnt ELSE 0 END) AS cnt1,
+          SUM(CASE WHEN rn = 2 THEN cnt ELSE 0 END) AS cnt2
+        FROM ranked_bins WHERE rn <= 2
       )
-      SELECT COUNT(*)::int AS total, COALESCE(ROUND(STDDEV(az)::numeric, 1), 0) AS std_az FROM courses
+      SELECT
+        g.total, g.std_az, g.mean_conv, g.mean_tang, g.total_len_km,
+        COALESCE(ABS(t.bin1 - t.bin2), 0)                                          AS bin_sep,
+        COALESCE((t.cnt1 + t.cnt2)::float / NULLIF(g.total, 0), 0)                AS bimodal_frac
+      FROM global_stats g, top2 t
     `, [geojsonStr]);
+
+    // Q2: Relevo regional (altitude_br.altitude_raster) no raio de 25km — usa ST_SummaryStats por tile
+    const terrainAgg = await safeQuery(`
+      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+      centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
+      buffer25 AS (
+        SELECT ST_Buffer(c::geography, ${RAIO_DRENAGEM_KM * 1000})::geometry AS bg FROM centroid_pt
+      ),
+      clipped AS (
+        SELECT ST_Clip(r.rast, b.bg, TRUE) AS rc
+        FROM altitude_br.altitude_raster r, buffer25 b
+        WHERE ST_Intersects(r.rast, b.bg)
+      ),
+      tstats AS (
+        SELECT (ST_SummaryStats(rc, 1, TRUE)).* FROM clipped WHERE rc IS NOT NULL
+      )
+      SELECT
+        COALESCE(MIN(min), 0)                AS min_alt,
+        COALESCE(MAX(max), 0)                AS max_alt,
+        COALESCE(MAX(max) - MIN(min), 0)     AS relief_m
+      FROM tstats
+    `, [geojsonStr]);
+
+    // Q3: Gradiente radial — altitude do centroide vs media de 8 pontos cardinais a 15km
+    const radialAgg = await safeQuery(`
+      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+      centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
+      ring_pts AS (
+        SELECT d.b AS bearing,
+               ST_Project(cp.c::geography, 15000, radians(d.b))::geometry AS pt
+        FROM centroid_pt cp
+        CROSS JOIN (VALUES (0),(45),(90),(135),(180),(225),(270),(315)) AS d(b)
+      ),
+      ring_alts AS (
+        SELECT ST_Value(r.rast, 1, rp.pt, TRUE) AS alt
+        FROM ring_pts rp
+        JOIN altitude_br.altitude_raster r ON ST_Intersects(r.rast, rp.pt)
+        WHERE ST_Value(r.rast, 1, rp.pt, TRUE) IS NOT NULL
+      ),
+      c_alt AS (
+        SELECT ST_Value(r.rast, 1, cp.c, TRUE) AS alt
+        FROM centroid_pt cp
+        JOIN altitude_br.altitude_raster r ON ST_Intersects(r.rast, cp.c)
+        WHERE ST_Value(r.rast, 1, cp.c, TRUE) IS NOT NULL
+        LIMIT 1
+      )
+      SELECT
+        COALESCE((SELECT alt FROM c_alt), 0)                        AS c_alt,
+        COALESCE(AVG(alt), 0)                                       AS ring_alt,
+        COALESCE((SELECT alt FROM c_alt) - AVG(alt), 0)            AS radial_grad
+      FROM ring_alts
+    `, [geojsonStr]);
+
     const compParcelRes = await safeQuery(`
       SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))::geography)), 0) AS len_m
       FROM hidrografia.geoft_bho_2017_curso_dagua c
-      WHERE c.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(c.geom) != ${SRID} THEN ST_SetSRID(c.geom, ${SRID}) ELSE c.geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     // Nomes de rios: hidrografia.rio_nomes (NORIOCOMP) — ST_DWithin 100m
     const nomesRes = await safeQuery(`
@@ -1264,34 +1355,95 @@ app.post('/api/analises', async (req, res) => {
     const ordensRes = await safeQuery(`
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
       FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       GROUP BY nuordemcda ORDER BY nuordemcda DESC
     `, [geojsonStr]);
-    const totalRaio = parseInt(padraoAgg.rows[0]?.total || 0);
-    const stdAz = parseFloat(padraoAgg.rows[0]?.std_az || 0);
-    const lenKm = parseFloat(((compParcelRes.rows[0]?.len_m || 0) / 1000).toFixed(2));
-    let padrao = 'Indefinido', descricao = 'Sem dados suficientes para definir o padrao';
-    if (totalRaio >= 3) {
-      if (stdAz < 25) { padrao = 'Paralelo'; descricao = "Cursos d'agua fluem em direcoes semelhantes, sugerindo controle estrutural ou relevo inclinado uniforme."; }
-      else if (stdAz < 50) { padrao = 'Subparalelo'; descricao = 'Padrao intermediario - orientacao parcialmente consistente.'; }
-      else { padrao = 'Dendritico'; descricao = 'Cursos ramificam-se como galhos de arvore - tipico em litologia homogenea e relevo suave.'; }
+
+    // === METRICAS EXTRAIDAS ===
+    const totalRaio    = parseInt(padraoAgg.rows[0]?.total       || 0);
+    const stdAz        = parseFloat(padraoAgg.rows[0]?.std_az    || 0);
+    const meanConv     = parseFloat(padraoAgg.rows[0]?.mean_conv || 0);
+    const meanTang     = parseFloat(padraoAgg.rows[0]?.mean_tang || 0);
+    const totalLenKm   = parseFloat(padraoAgg.rows[0]?.total_len_km || 0);
+    const binSep       = parseFloat(padraoAgg.rows[0]?.bin_sep      || 0);
+    const bimodalFrac  = parseFloat(padraoAgg.rows[0]?.bimodal_frac || 0);
+    const reliefM      = parseFloat(terrainAgg.rows[0]?.relief_m || 0);
+    const radialGrad   = parseFloat(radialAgg.rows[0]?.radial_grad  || 0);
+    const bufAreaKm2   = Math.PI * RAIO_DRENAGEM_KM * RAIO_DRENAGEM_KM;  // ~1963 km²
+    const streamDens   = bufAreaKm2 > 0 ? totalLenKm / bufAreaKm2 : 0;
+    const lenKm        = parseFloat(((compParcelRes.rows[0]?.len_m || 0) / 1000).toFixed(2));
+
+    // === CLASSIFICACAO TECNICA DO PADRAO DE DRENAGEM ===
+    // Baseada em: desvio do azimute, indice de convergencia, gradiente radial do terreno,
+    // tangencialidade (anelar), bimodalidade direcional e relevo regional.
+    let padrao = 'Indefinido', descricao = 'Dados insuficientes para classificação do padrão de drenagem.';
+
+    if (totalRaio >= 5) {
+      // Flags de classificacao
+      const isBimodalPerp    = bimodalFrac >= 0.35 && binSep >= 60 && binSep <= 120;  // dois grupos ~90° — treliça/retangular
+      const isBimodalOblique = bimodalFrac >= 0.38 && binSep >= 30 && binSep < 60;   // grupos em angulo obliquo — angular
+      const isRadCentripeta  = meanConv > 0.40 || (radialGrad < -60 && meanConv > 0.20);
+      const isRadCentrifuga  = meanConv < -0.40 || (radialGrad > 60 && meanConv < -0.20);
+      const isAnelar         = meanTang > 0.78 && stdAz > 35 && Math.abs(meanConv) < 0.25;
+      const isDesorganizada  = reliefM < 30 && streamDens < 0.05;
+
+      if (isDesorganizada) {
+        padrao    = 'Desorganizada';
+        descricao = "Relevo plano com baixa densidade de drenagem. Canais sem organização definida, típico de planícies mal drenadas, áreas de sedimentação recente, várzeas ou zonas de alagamento periódico.";
+      } else if (isRadCentripeta) {
+        padrao    = 'Radial Centrípeta';
+        descricao = "Cursos d'água convergem para uma área central deprimida. Indica bacia fechada, depressão, área endorreica, pantanal ou planície interior que recebe a drenagem regional.";
+      } else if (isRadCentrifuga) {
+        padrao    = 'Radial Centrífuga';
+        descricao = "Cursos d'água divergem de uma elevação central. Indica domo, serra isolada, chapada elevada ou maciço residual de onde a drenagem se irradia para todos os lados.";
+      } else if (isAnelar) {
+        padrao    = 'Anelar';
+        descricao = "Cursos d'água formam padrão circular ou semicircular contornando estruturas geológicas em arco. Típico de domos erodidos, intrusões geológicas circulares ou crateras antigas com controle estrutural anelar.";
+      } else if (isBimodalPerp && stdAz >= 45) {
+        padrao    = 'Retangular';
+        descricao = "Canais com mudanças bruscas de direção em ângulos próximos de 90°, controlados por dois sistemas de falhas/fraturas perpendiculares entre si. Indica controle tectônico com lineamentos estruturais bem definidos.";
+      } else if (isBimodalPerp && stdAz < 45) {
+        padrao    = 'Treliça';
+        descricao = "Rio principal numa direção dominante com afluentes entrando em ângulo reto. Típico de camadas alternadas de rochas resistentes e frágeis (arenitos, folhelhos, quartzitos), dobramentos e relevo de cristas e vales paralelos com forte controle estrutural.";
+      } else if (isBimodalOblique) {
+        padrao    = 'Angular';
+        descricao = "Canais com mudanças bruscas de direção em ângulos variados (não necessariamente 90°), controlados por fraturas e falhas oblíquas. Indica fraturamento intenso com múltiplos lineamentos geológicos em direções diversas.";
+      } else if (stdAz < 25) {
+        padrao    = 'Paralela';
+        descricao = "Canais correm em direções semelhantes, paralelos entre si. Indica forte declividade uniforme, relevo inclinado, vertentes longas ou escarpas com controle topográfico dominante — comum em áreas de cuesta ou relevos alongados.";
+      } else if (stdAz < 40) {
+        padrao    = 'Subparalela';
+        descricao = "Orientação parcialmente consistente dos canais com variação moderada. Padrão intermediário entre paralela e dendrítica, com algum controle direcional, comum em relevo suavemente inclinado com leve controle estrutural.";
+      } else {
+        padrao    = 'Dendrítica';
+        descricao = "Cursos d'água ramificam-se irregularmente como galhos de árvore em ângulos variados. Típico de terreno litologicamente homogêneo sem forte controle estrutural, comum em áreas sedimentares ou cristalinas pouco estruturadas com relevo suavemente dissecado.";
+      }
     }
-    const ordens = ordensRes.rows || [];
-    const ordemMax = ordens.reduce((m, r) => Math.max(m, parseInt(r.ordem || 0)), 0);
-    const ordem1 = parseInt(ordens.find(r => parseInt(r.ordem) === 1)?.cnt || 0);
-    const ordem2 = parseInt(ordens.find(r => parseInt(r.ordem) === 2)?.cnt || 0);
+
+    const ordens    = ordensRes.rows || [];
+    const ordemMax  = ordens.reduce((m, r) => Math.max(m, parseInt(r.ordem || 0)), 0);
+    const ordem1    = parseInt(ordens.find(r => parseInt(r.ordem) === 1)?.cnt || 0);
+    const ordem2    = parseInt(ordens.find(r => parseInt(r.ordem) === 2)?.cnt || 0);
     const ordem3plus = ordens.filter(r => parseInt(r.ordem) >= 3).reduce((s, r) => s + parseInt(r.cnt || 0), 0);
+
     analyses['9.10_hidrografia'].padrao_drenagem = {
       padrao, descricao,
-      raio_analise_km: RAIO_DRENAGEM_KM,
-      total_raio: totalRaio,
-      desvio_azimuth: stdAz,
-      comprimento_km: lenKm,
-      ordem_maxima: ordemMax,
+      raio_analise_km:   RAIO_DRENAGEM_KM,
+      total_raio:        totalRaio,
+      desvio_azimuth:    stdAz,
+      convergencia:      Math.round(meanConv * 1000) / 1000,
+      tangencialidade:   Math.round(meanTang * 1000) / 1000,
+      gradiente_radial:  Math.round(radialGrad),
+      relevo_regional_m: Math.round(reliefM),
+      bimodalidade_pct:  Math.round(bimodalFrac * 100),
+      separacao_bins:    binSep,
+      comprimento_km:    lenKm,
+      ordem_maxima:      ordemMax,
       ordem1, ordem2, ordem3plus
     };
     analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
     analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
+
 
     // 9.11 Altitude
     analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null };
