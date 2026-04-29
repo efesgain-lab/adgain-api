@@ -1489,7 +1489,7 @@ app.post('/api/analises', async (req, res) => {
       ordem1, ordem2, ordem3plus
     };
     analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
-idrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
+    analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
 
     // Geometria dos cursos d'água para mapa SVG (buffer 25km centrado na parcela)
     const riosGeomResult = await safeQuery(`
