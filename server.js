@@ -1,4 +1,4 @@
-require('dotenv').config() // init // x
+require('dotenv').config() // init // xx
    
 const express = require('express');
 const cors = require('cors');
