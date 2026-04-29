@@ -672,7 +672,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           gid as id,
           parcela_co as numero,
           ST_AsGeoJSON(geom) as geojson,
-          ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${sigefTable}
         WHERE geom && ST_GeomFromText($1) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -690,7 +690,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
             gid as id,
             num_proces as numero,
             ST_AsGeoJSON(geom) as geojson,
-            ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+            ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
           FROM ${snciTable}
           WHERE geom && ST_GeomFromText($1) AND ST_Intersects(
             CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -710,7 +710,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           gid as id,
           cod_imovel as numero,
           ST_AsGeoJSON(geom) as geojson,
-          ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${carTable}
         WHERE geom && ST_GeomFromText($1) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -764,7 +764,7 @@ app.post('/api/analises', async (req, res) => {
         m."NM_MUN" as municipio,
         m."SIGLA_UF" as uf,
         ST_AsGeoJSON(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as centroid,
-        ROUND(CAST(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 32721)) / 10000 AS numeric), 2) as area_hectares
+        ROUND(CAST(ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
       FROM municipios.municipios_2024 m
       WHERE m.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(CASE WHEN ST_SRID(m.geom) != ${SRID} THEN ST_SetSRID(m.geom, ${SRID}) ELSE m.geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
       ORDER BY ST_Area(ST_Intersection(m.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) DESC
@@ -855,7 +855,7 @@ app.post('/api/analises', async (req, res) => {
           t.data_aprov::text as data_aprov,
           t.codigo_imo, t.registro_m,
           t.registro_d::text as registro_d,
-          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${sigefTable} t
         WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
@@ -875,7 +875,7 @@ app.post('/api/analises', async (req, res) => {
           t.cod_imovel, t.nome_imove, t.num_certif,
           t.data_certi::text as data_certi,
           t.qtd_area_p,
-          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${snciTable} t
         WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
@@ -897,7 +897,7 @@ app.post('/api/analises', async (req, res) => {
           t.data_aprov::text as data_aprov,
           t.codigo_imo, t.registro_m,
           t.registro_d::text as registro_d,
-          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${sigefTable} t
         WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
@@ -920,7 +920,7 @@ app.post('/api/analises', async (req, res) => {
           t.cod_imovel, t.nome_imove, t.num_certif,
           t.data_certi::text as data_certi,
           t.qtd_area_p,
-          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${snciTable} t
         WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
           CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
@@ -1138,7 +1138,7 @@ app.post('/api/analises', async (req, res) => {
         ROUND(CAST(ST_Area(ST_Intersection(
                     ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
                     ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
-                )::geography) / 10000 AS numeric), 2) as area_hectares
+                )::geography) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
       FROM terra_indigena.poligonais_portarias
             WHERE ST_Intersects()
                 ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
@@ -1169,7 +1169,7 @@ app.post('/api/analises', async (req, res) => {
             superficie: f.properties.superficie || null,
             fase_ti: f.properties.fase_ti || null,
           }));
-          if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
+          for(let _i=0;_i<_wfsRows.length;_i++){const _pg=await safeQuery(`SELECT ROUND(CAST(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb),${SRID})),ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID})))::geography)/NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID}))::geography),0)*100 AS numeric),2) as pct`,[JSON.stringify(_wfsData.features[_i].geometry),geojsonStr]);_wfsRows[_i].percentual_sobreposicao=_pg.rows[0]?.pct??null;} if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
         }
       } catch (_e) { console.warn('[TI WFS]', _e.message); }
     }
@@ -1372,7 +1372,7 @@ app.post('/api/analises', async (req, res) => {
       carAreaResult = await safeQuery(`
         SELECT
           gid as id, cod_imovel, num_area, ind_tipo, ind_status, des_condic, dat_criaca, dat_atuali,
-          ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${carAreaTable}
         WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -1391,7 +1391,7 @@ app.post('/api/analises', async (req, res) => {
         ${samplePtsCTE}
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.cod_imovel, t.num_area, t.ind_tipo, t.ind_status, t.des_condic, t.dat_criaca, t.dat_atuali,
-          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
         FROM ${carAreaTable} t, sample_pts sp
         WHERE ST_Contains(
           CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
@@ -1415,7 +1415,7 @@ app.post('/api/analises', async (req, res) => {
         ROUND(CAST(SUM(ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ))) / 10000 AS numeric), 2) as area_hectares
+        ))) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
       FROM ${carAppsTable}
       WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
