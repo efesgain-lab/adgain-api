@@ -1103,7 +1103,11 @@ app.post('/api/analises', async (req, res) => {
         "PROCESSO"  as numero_processo,
         "FASE"      as fase,
         "NOME"      as titular,
-        "SUBS"      as substancia
+        "SUBS"      as substancia,
+        ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Intersection(
+          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        ), 0.001)) as geom_json
       FROM ${anmProcessoTable}
       WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -1138,7 +1142,11 @@ app.post('/api/analises', async (req, res) => {
         ROUND(CAST(ST_Area(ST_Intersection(
                     ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
                     ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
-                )::geography) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao
+                )::geography) / NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))::geography), 0) * 100 AS numeric), 2) as percentual_sobreposicao,
+        ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Intersection(
+          ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
+          ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
+        ), 0.001)) as geom_json
       FROM terra_indigena.poligonais_portarias
             WHERE ST_Intersects()
                 ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
@@ -1188,7 +1196,11 @@ app.post('/api/analises', async (req, res) => {
         ROUND(CAST(ST_Area(ST_Intersection(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        )) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as sobreposicao_percentual
+        )) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as sobreposicao_percentual,
+        ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Intersection(
+          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        ), 0.001)) as geom_json
       FROM unidade_conservacao.unidade_conserv
       WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
         CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
@@ -1198,7 +1210,7 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.9_ucs'].data = ucsResult.rows;
 
     // 9.10 Hidrografia
-    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0 };
+    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0, rios_geom: [] };
 
     // Bacias hidrográficas — tenta bacias_nivel_2 a bacias_nivel_6 no schema bacias_hidrograficas
     const baciasRows = [];
@@ -1478,6 +1490,25 @@ app.post('/api/analises', async (req, res) => {
     };
     analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
 idrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
+
+    // Geometria dos cursos d'água para mapa SVG (buffer 25km centrado na parcela)
+    const riosGeomResult = await safeQuery(`
+      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+      centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
+      buf AS (SELECT ST_Buffer(c::geography, ${RAIO_DRENAGEM_KM * 1000})::geometry AS bg FROM centroid_pt)
+      SELECT
+        ST_AsGeoJSON(ST_Simplify((ST_Dump(c.geom)).geom, 0.0005)) AS geom_json,
+        COALESCE(NULLIF(TRIM(rn."NORIOCOMP"::text), ''), '') AS nome
+      FROM hidrografia.geoft_bho_2017_curso_dagua c
+      LEFT JOIN LATERAL (
+        SELECT "NORIOCOMP" FROM hidrografia.rio_nomes rn2
+        WHERE ST_DWithin(rn2.geom::geography, ST_Centroid(c.geom)::geography, 100)
+        LIMIT 1
+      ) rn ON true
+      WHERE ST_Intersects(c.geom, (SELECT bg FROM buf))
+      LIMIT 400
+    `, [geojsonStr]);
+    analyses['9.10_hidrografia'].rios_geom = riosGeomResult.rows || [];
 
 
     // 9.11 Altitude
@@ -1949,6 +1980,7 @@ idrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean)
         padrao_drenagem:          analyses['9.10_hidrografia'].padrao_drenagem,
         comprimento_influencia_km: analyses['9.10_hidrografia'].comprimento_influencia_km || 0,
         nomes_rios:               analyses['9.10_hidrografia'].nomes_rios || [],
+        rios_geom:                analyses['9.10_hidrografia'].rios_geom || [],
       },
       altitude: {
         altitude_min:    analyses['9.11_altitude'].min_m,
@@ -1979,6 +2011,7 @@ idrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean)
       municipios: [{ nm_mun: municipio.municipio, sigla_uf: municipio.uf }],
       centroide:  centroidParsed ? { lat: centroidParsed.coordinates[1], lng: centroidParsed.coordinates[0] } : { lat: 0, lng: 0 },
       area_total_ha: parseFloat(municipio.area_hectares) || 0,
+      parcel_geojson: JSON.parse(geojsonStr),  // geometria da parcela analisada — usada para overlay nos mapas SVG
     };
 
     res.json({ sucesso: true, gerado_em: new Date().toISOString(), resultados });
