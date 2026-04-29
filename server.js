@@ -1151,11 +1151,14 @@ app.post('/api/analises', async (req, res) => {
       try {
         const _feat = JSON.parse(geojsonStr);
         const _g = _feat.geometry;
-        const _ring = _g.type === 'MultiPolygon' ? _g.coordinates[0][0] : _g.coordinates[0];
-        const _wkt = _ring.map(c => c.join(' ')).join(',');
+        // Calcular BBOX para query WFS mais confiavel (evita URL longa com WKT)
+        const _allCoords = _g.type === 'MultiPolygon' ? _g.coordinates.flat(2) : _g.coordinates.flat(1);
+        const _lons = _allCoords.map(c => c[0]);
+        const _lats =_allCoords.map(c => c[1]);
+        const _bboxStr = Math.min(..._lons)+','+Math.min(..._lats)+','+Math.max(..._lons)+','+Math.max(..._lats);
         const _ctrl = new AbortController();
-        const _tmr = setTimeout(() => _ctrl.abort(), 8000);
-        const _wfsUrl = 'https://geoserver.funai.gov.br/geoserver/Funai/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=Funai:tis_poligonais&outputFormat=application%2Fjson&CQL_FILTER=INTERSECTS(geom,POLYGON((' + _wkt + ')))&count=20';
+        const _tmr = setTimeout(() => _ctrl.abort(), 15000);
+        const _wfsUrl = 'https://geoserver.funai.gov.br/geoserver/Funai/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=Funai:tis_poligonais&outputFormat=application/json&BBOX='+_bboxStr+',EPSG:4674&count=50';
         const _wfsResp = await fetch(_wfsUrl, { signal: _ctrl.signal });
         clearTimeout(_tmr);
         if (_wfsResp.ok) {
