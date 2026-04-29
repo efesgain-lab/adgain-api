@@ -1134,12 +1134,12 @@ app.post('/api/analises', async (req, res) => {
     // 9.8 Terras Indígenas
     analyses['9.8_terras_indigenas'] = { nome: 'Terras Indígenas', data: [] };
     let tisResult = await safeQuery(`
-      SELECT id, terrai_nom as nome, etnia_nome as etnia,
+      SELECT id, terrai_nome as nome, etnia_nome as etnia,
         ROUND(CAST(ST_Area(ST_Intersection(
                     ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
                     ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
                 )::geography) / 10000 AS numeric), 2) as area_hectares
-      FROM terra_indigena.tis_poligonais
+      FROM terra_indigena.poligonais_portarias
             WHERE ST_Intersects()
                 ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
                 ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
@@ -1845,7 +1845,7 @@ app.get('/api/camadas/:camada', async (req, res) => {
     // Static (non-partitioned) layers
     const staticLayerConfig = {
       bioma:    { table: 'bioma.bioma_250',                    idCol: 'id', labelCol: '"Bioma"' },
-      tis:      { table: 'terra_indigena.tis_poligonais',      idCol: 'id', labelCol: 'terrai_nom' },
+      tis:      { table: 'terra_indigena.poligonais_portarias',      idCol: 'id', labelCol: 'terrai_nome' },
       ucs:      { table: 'unidade_conservacao.unidade_conserv', idCol: 'id', labelCol: '"NOME_UC1"' },
       embargos: { table: 'embargos.embargos_ibama',            idCol: 'id', labelCol: 'num_auto_i' },
     };
