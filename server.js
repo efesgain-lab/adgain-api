@@ -1165,7 +1165,9 @@ app.post('/api/analises', async (req, res) => {
           const _wfsData = await _wfsResp.json();
           const _wfsRows = (_wfsData.features || []).map(f => ({
             id: f.id, nome: f.properties.terrai_nom,
-            etnia: f.properties.etnia_nome || null, area_hectares: null,
+            etnia: f.properties.etnia_nome || null,
+            area_hectares: f.properties.superficie || null,
+            fase: f.properties.fase_ti || null,
           }));
           if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
         }
