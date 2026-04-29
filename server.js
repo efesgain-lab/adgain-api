@@ -1136,15 +1136,38 @@ app.post('/api/analises', async (req, res) => {
     let tisResult = await safeQuery(`
       SELECT id, terrai_nom as nome, etnia_nome as etnia,
         ROUND(CAST(ST_Area(ST_Intersection(
-          CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        )) / 10000 AS numeric), 2) as area_hectares
+                    ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
+                    ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
+                )::geography) / 10000 AS numeric), 2) as area_hectares
       FROM terra_indigena.tis_poligonais
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
-        CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+            WHERE ST_Intersects()
+                ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
+                ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
       )
     `, [geojsonStr]);
+
+    // Fallback: FUNAI WFS quando DB nao retorna sobreposicao com TI
+    if (!tisResult.rows.length) {
+      try {
+        const _feat = JSON.parse(geojsonStr);
+        const _g = _feat.geometry;
+        const _ring = _g.type === 'MultiPolygon' ? _g.coordinates[0][0] : _g.coordinates[0];
+        const _wkt = _ring.map(c => c.join(' ')).join(',');
+        const _ctrl = new AbortController();
+        const _tmr = setTimeout(() => _ctrl.abort(), 8000);
+        const _wfsUrl = 'https://geoserver.funai.gov.br/geoserver/Funai/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=Funai:tis_poligonais&outputFormat=application%2Fjson&CQL_FILTER=INTERSECTS(geom,POLYGON((' + _wkt + ')))&count=20';
+        const _wfsResp = await fetch(_wfsUrl, { signal: _ctrl.signal });
+        clearTimeout(_tmr);
+        if (_wfsResp.ok) {
+          const _wfsData = await _wfsResp.json();
+          const _wfsRows = (_wfsData.features || []).map(f => ({
+            id: f.id, nome: f.properties.terrai_nom,
+            etnia: f.properties.etnia_nome || null, area_hectares: null,
+          }));
+          if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
+        }
+      } catch (_e) { console.warn('[TI WFS]', _e.message); }
+    }
     analyses['9.8_terras_indigenas'].data = tisResult.rows;
 
     // 9.9 Unidades de Conservação
