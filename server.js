@@ -1134,7 +1134,7 @@ app.post('/api/analises', async (req, res) => {
     // 9.8 Terras Indígenas
     analyses['9.8_terras_indigenas'] = { nome: 'Terras Indígenas', data: [] };
     let tisResult = await safeQuery(`
-      SELECT id, terrai_nome as nome, etnia_nome as etnia,
+      SELECT id, terrai_nome as nome, superficie_perimetro_ha as superficie,
         ROUND(CAST(ST_Area(ST_Intersection(
                     ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
                     ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
@@ -1164,7 +1164,7 @@ app.post('/api/analises', async (req, res) => {
         if (_wfsResp.ok) {
           const _wfsData = await _wfsResp.json();
           const _wfsRows = (_wfsData.features || []).map(f => ({
-            id: f.id, nome: f.properties.terrai_nom,
+            id: f.id, nome: f.properties.terrai_nome || f.properties.terrai_nom,
             etnia: f.properties.etnia_nome || null,
             superficie: f.properties.superficie || null,
             fase_ti: f.properties.fase_ti || null,
