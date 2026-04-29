@@ -1236,48 +1236,69 @@ app.post('/api/analises', async (req, res) => {
     const RAIO_DRENAGEM_KM = 25;
 
     // Q1: Estatisticas de azimute, indice de convergencia e bimodalidade direcional
+    // FIX: ST_Dump para achatar MULTILINESTRING → LineStrings individuais antes de ST_StartPoint/ST_EndPoint
+    // FIX: courses_valid filtra az_full IS NOT NULL (evita stdAz = 0 artificial)
+    // FIX: top2 com MAX(CASE WHEN) garante sempre 1 linha mesmo sem dados
     const padraoAgg = await safeQuery(`
       WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
       centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
       buffer25 AS (
         SELECT ST_Buffer(c::geography, ${RAIO_DRENAGEM_KM * 1000})::geometry AS bg FROM centroid_pt
       ),
-      courses AS (
-        SELECT
-          ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom))                         AS az_full,
-          MOD(degrees(ST_Azimuth(ST_StartPoint(c.geom), ST_EndPoint(c.geom)))::numeric, 180) AS az_norm,
-          ST_Azimuth(ST_Centroid(c.geom), (SELECT cp.c FROM centroid_pt cp))              AS bear_ctr,
-          ST_Length(c.geom::geography) / 1000.0                                           AS len_km
+      raw_segs AS (
+        -- Achata MULTILINESTRING → LineStrings para que ST_StartPoint/ST_EndPoint funcionem
+        SELECT (ST_Dump(c.geom)).geom AS seg
         FROM hidrografia.geoft_bho_2017_curso_dagua c
         WHERE ST_Intersects(c.geom, (SELECT bg FROM buffer25))
+      ),
+      courses AS (
+        SELECT
+          ST_Azimuth(ST_StartPoint(seg), ST_EndPoint(seg))                               AS az_full,
+          MOD(degrees(ST_Azimuth(ST_StartPoint(seg), ST_EndPoint(seg)))::numeric, 180)   AS az_norm,
+          ST_Azimuth(ST_Centroid(seg), (SELECT cp.c FROM centroid_pt cp))                AS bear_ctr,
+          ST_Length(seg::geography) / 1000.0                                             AS len_km
+        FROM raw_segs
+        WHERE ST_NPoints(seg) >= 2
+      ),
+      courses_valid AS (
+        -- Remove segmentos degenerados (ponto inicial = ponto final → azimute NULL)
+        SELECT * FROM courses WHERE az_full IS NOT NULL AND az_norm IS NOT NULL
       ),
       global_stats AS (
         SELECT
           COUNT(*)                                                                    AS total,
           ROUND(COALESCE(STDDEV(az_norm), 0)::numeric, 1)                           AS std_az,
+          -- Rayleigh R para estatistica circular (direcoes em [0,180°] → dobrar angulo)
+          ROUND(COALESCE(SQRT(
+            POWER(AVG(cos(2.0 * az_norm * pi() / 180.0)), 2) +
+            POWER(AVG(sin(2.0 * az_norm * pi() / 180.0)), 2)
+          ), 0)::numeric, 3)                                                          AS rayleigh_r,
           -- Indice de convergencia: +1 = centrípeta, -1 = centrífuga, 0 = tangencial
           ROUND(COALESCE(AVG(cos(az_full - bear_ctr)), 0)::numeric, 3)             AS mean_conv,
           -- Tangencialidade: alto = fluxo ao redor do centroide (anelar)
           ROUND(COALESCE(AVG(ABS(sin(az_full - bear_ctr))), 0)::numeric, 3)        AS mean_tang,
           COALESCE(SUM(len_km), 0)                                                  AS total_len_km
-        FROM courses
+        FROM courses_valid
       ),
       az_histogram AS (
-        SELECT (az_norm::int / 10) * 10 AS bin, COUNT(*) AS cnt FROM courses GROUP BY 1
+        SELECT (az_norm::int / 10) * 10 AS bin, COUNT(*) AS cnt
+        FROM courses_valid
+        GROUP BY 1
       ),
       ranked_bins AS (
         SELECT bin, cnt, ROW_NUMBER() OVER (ORDER BY cnt DESC) AS rn FROM az_histogram
       ),
       top2 AS (
+        -- MAX(CASE WHEN) garante sempre 1 linha mesmo se ranked_bins estiver vazio
         SELECT
-          SUM(CASE WHEN rn = 1 THEN bin ELSE 0 END) AS bin1,
-          SUM(CASE WHEN rn = 2 THEN bin ELSE 0 END) AS bin2,
-          SUM(CASE WHEN rn = 1 THEN cnt ELSE 0 END) AS cnt1,
-          SUM(CASE WHEN rn = 2 THEN cnt ELSE 0 END) AS cnt2
-        FROM ranked_bins WHERE rn <= 2
+          COALESCE(MAX(CASE WHEN rn = 1 THEN bin END), 0) AS bin1,
+          COALESCE(MAX(CASE WHEN rn = 2 THEN bin END), 0) AS bin2,
+          COALESCE(MAX(CASE WHEN rn = 1 THEN cnt END), 0) AS cnt1,
+          COALESCE(MAX(CASE WHEN rn = 2 THEN cnt END), 0) AS cnt2
+        FROM ranked_bins
       )
       SELECT
-        g.total, g.std_az, g.mean_conv, g.mean_tang, g.total_len_km,
+        g.total, g.std_az, g.rayleigh_r, g.mean_conv, g.mean_tang, g.total_len_km,
         COALESCE(ABS(t.bin1 - t.bin2), 0)                                          AS bin_sep,
         COALESCE((t.cnt1 + t.cnt2)::float / NULLIF(g.total, 0), 0)                AS bimodal_frac
       FROM global_stats g, top2 t
@@ -1360,63 +1381,75 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
 
     // === METRICAS EXTRAIDAS ===
-    const totalRaio    = parseInt(padraoAgg.rows[0]?.total       || 0);
-    const stdAz        = parseFloat(padraoAgg.rows[0]?.std_az    || 0);
-    const meanConv     = parseFloat(padraoAgg.rows[0]?.mean_conv || 0);
-    const meanTang     = parseFloat(padraoAgg.rows[0]?.mean_tang || 0);
+    const totalRaio    = parseInt(padraoAgg.rows[0]?.total         || 0);
+    const stdAz        = parseFloat(padraoAgg.rows[0]?.std_az      || 0);
+    const rayleighR    = parseFloat(padraoAgg.rows[0]?.rayleigh_r  || 0); // 0=aleatório, 1=paralelo
+    const meanConv     = parseFloat(padraoAgg.rows[0]?.mean_conv   || 0);
+    const meanTang     = parseFloat(padraoAgg.rows[0]?.mean_tang   || 0);
     const totalLenKm   = parseFloat(padraoAgg.rows[0]?.total_len_km || 0);
     const binSep       = parseFloat(padraoAgg.rows[0]?.bin_sep      || 0);
     const bimodalFrac  = parseFloat(padraoAgg.rows[0]?.bimodal_frac || 0);
-    const reliefM      = parseFloat(terrainAgg.rows[0]?.relief_m || 0);
+    const reliefM      = parseFloat(terrainAgg.rows[0]?.relief_m   || 0);
     const radialGrad   = parseFloat(radialAgg.rows[0]?.radial_grad  || 0);
     const bufAreaKm2   = Math.PI * RAIO_DRENAGEM_KM * RAIO_DRENAGEM_KM;  // ~1963 km²
     const streamDens   = bufAreaKm2 > 0 ? totalLenKm / bufAreaKm2 : 0;
     const lenKm        = parseFloat(((compParcelRes.rows[0]?.len_m || 0) / 1000).toFixed(2));
+    // spread circular: 0 = todos paralelos, 1 = aleatório — mais robusto que stdAz puro
+    const circSpread   = 1 - rayleighR;
 
     // === CLASSIFICACAO TECNICA DO PADRAO DE DRENAGEM ===
-    // Baseada em: desvio do azimute, indice de convergencia, gradiente radial do terreno,
-    // tangencialidade (anelar), bimodalidade direcional e relevo regional.
+    // Usa circSpread (Rayleigh 1-R) como medida de dispersão direcional circular correta.
+    // Escala: circSpread~0 = canais paralelos; circSpread~1 = direções aleatórias (dendrítico).
     let padrao = 'Indefinido', descricao = 'Dados insuficientes para classificação do padrão de drenagem.';
 
     if (totalRaio >= 5) {
       // Flags de classificacao
-      const isBimodalPerp    = bimodalFrac >= 0.35 && binSep >= 60 && binSep <= 120;  // dois grupos ~90° — treliça/retangular
-      const isBimodalOblique = bimodalFrac >= 0.38 && binSep >= 30 && binSep < 60;   // grupos em angulo obliquo — angular
-      const isRadCentripeta  = meanConv > 0.40 || (radialGrad < -60 && meanConv > 0.20);
-      const isRadCentrifuga  = meanConv < -0.40 || (radialGrad > 60 && meanConv < -0.20);
-      const isAnelar         = meanTang > 0.78 && stdAz > 35 && Math.abs(meanConv) < 0.25;
-      const isDesorganizada  = reliefM < 30 && streamDens < 0.05;
+      // Bimodal perpendicular: dois grupos separados ~90° (treliça/retangular)
+      const isBimodalPerp    = bimodalFrac >= 0.35 && binSep >= 55 && binSep <= 125;
+      // Bimodal obliquo: grupos em ângulo ~30-60° (angular)
+      const isBimodalOblique = bimodalFrac >= 0.38 && binSep >= 25 && binSep < 55;
+      // Radial: convergência/divergência em relação ao centróide
+      const isRadCentripeta  = meanConv > 0.35 || (radialGrad < -50 && meanConv > 0.15);
+      const isRadCentrifuga  = meanConv < -0.35 || (radialGrad > 50 && meanConv < -0.15);
+      // Anelar: tangencial ao centróide com baixa convergência
+      const isAnelar         = meanTang > 0.72 && circSpread > 0.30 && Math.abs(meanConv) < 0.30;
+      // Desorganizada: planície rasa com baixíssima densidade de drenagem
+      const isDesorganizada  = reliefM < 25 && streamDens < 0.04;
+      // Paralela: Rayleigh R alto (canais muito concentrados em 1 direção)
+      const isParalela       = rayleighR > 0.75 && !isBimodalPerp && !isBimodalOblique;
+      // Subparalela: R moderadamente alto
+      const isSubparalela    = rayleighR > 0.50 && !isBimodalPerp && !isBimodalOblique;
 
       if (isDesorganizada) {
         padrao    = 'Desorganizada';
         descricao = "Relevo plano com baixa densidade de drenagem. Canais sem organização definida, típico de planícies mal drenadas, áreas de sedimentação recente, várzeas ou zonas de alagamento periódico.";
       } else if (isRadCentripeta) {
         padrao    = 'Radial Centrípeta';
-        descricao = "Cursos d'água convergem para uma área central deprimida. Indica bacia fechada, depressão, área endorreica, pantanal ou planície interior que recebe a drenagem regional.";
+        descricao = "Cursos d'\u00e1gua convergem para uma área central deprimida. Indica bacia fechada, depressão, área endorreica, pantanal ou planície interior que recebe a drenagem regional.";
       } else if (isRadCentrifuga) {
         padrao    = 'Radial Centrífuga';
-        descricao = "Cursos d'água divergem de uma elevação central. Indica domo, serra isolada, chapada elevada ou maciço residual de onde a drenagem se irradia para todos os lados.";
+        descricao = "Cursos d'\u00e1gua divergem de uma elevação central. Indica domo, serra isolada, chapada elevada ou maciço residual de onde a drenagem se irradia para todos os lados.";
       } else if (isAnelar) {
         padrao    = 'Anelar';
-        descricao = "Cursos d'água formam padrão circular ou semicircular contornando estruturas geológicas em arco. Típico de domos erodidos, intrusões geológicas circulares ou crateras antigas com controle estrutural anelar.";
-      } else if (isBimodalPerp && stdAz >= 45) {
+        descricao = "Cursos d'\u00e1gua formam padrão circular ou semicircular contornando estruturas geológicas em arco. Típico de domos erodidos, intrusões geológicas circulares ou crateras antigas com controle estrutural anelar.";
+      } else if (isBimodalPerp && rayleighR < 0.55) {
         padrao    = 'Retangular';
         descricao = "Canais com mudanças bruscas de direção em ângulos próximos de 90°, controlados por dois sistemas de falhas/fraturas perpendiculares entre si. Indica controle tectônico com lineamentos estruturais bem definidos.";
-      } else if (isBimodalPerp && stdAz < 45) {
+      } else if (isBimodalPerp) {
         padrao    = 'Treliça';
         descricao = "Rio principal numa direção dominante com afluentes entrando em ângulo reto. Típico de camadas alternadas de rochas resistentes e frágeis (arenitos, folhelhos, quartzitos), dobramentos e relevo de cristas e vales paralelos com forte controle estrutural.";
       } else if (isBimodalOblique) {
         padrao    = 'Angular';
         descricao = "Canais com mudanças bruscas de direção em ângulos variados (não necessariamente 90°), controlados por fraturas e falhas oblíquas. Indica fraturamento intenso com múltiplos lineamentos geológicos em direções diversas.";
-      } else if (stdAz < 25) {
+      } else if (isParalela) {
         padrao    = 'Paralela';
         descricao = "Canais correm em direções semelhantes, paralelos entre si. Indica forte declividade uniforme, relevo inclinado, vertentes longas ou escarpas com controle topográfico dominante — comum em áreas de cuesta ou relevos alongados.";
-      } else if (stdAz < 40) {
+      } else if (isSubparalela) {
         padrao    = 'Subparalela';
         descricao = "Orientação parcialmente consistente dos canais com variação moderada. Padrão intermediário entre paralela e dendrítica, com algum controle direcional, comum em relevo suavemente inclinado com leve controle estrutural.";
       } else {
         padrao    = 'Dendrítica';
-        descricao = "Cursos d'água ramificam-se irregularmente como galhos de árvore em ângulos variados. Típico de terreno litologicamente homogêneo sem forte controle estrutural, comum em áreas sedimentares ou cristalinas pouco estruturadas com relevo suavemente dissecado.";
+        descricao = "Cursos d'\u00e1gua ramificam-se irregularmente como galhos de árvore em ângulos variados. Típico de terreno litologicamente homogêneo sem forte controle estrutural, comum em áreas sedimentares ou cristalinas pouco estruturadas com relevo suavemente dissecado.";
       }
     }
 
@@ -1431,6 +1464,8 @@ app.post('/api/analises', async (req, res) => {
       raio_analise_km:   RAIO_DRENAGEM_KM,
       total_raio:        totalRaio,
       desvio_azimuth:    stdAz,
+      rayleigh_r:        Math.round(rayleighR * 1000) / 1000,
+      circ_spread:       Math.round(circSpread * 1000) / 1000,
       convergencia:      Math.round(meanConv * 1000) / 1000,
       tangencialidade:   Math.round(meanTang * 1000) / 1000,
       gradiente_radial:  Math.round(radialGrad),
@@ -1442,7 +1477,7 @@ app.post('/api/analises', async (req, res) => {
       ordem1, ordem2, ordem3plus
     };
     analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
-    analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
+idrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
 
 
     // 9.11 Altitude
