@@ -19,6 +19,8 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+  statement_timeout: 15000,
+  query_timeout: 16000,
   family: 4,
 });
 
