@@ -1234,25 +1234,21 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].bacias = baciasRows;
 
     let cursosResult = await safeQuery(`
+      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
       SELECT COUNT(*) as total
-      FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
-        CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
+      FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
+      WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
     `, [geojsonStr]);
     analyses['9.10_hidrografia'].cursos_agua_count = parseInt(cursosResult.rows[0]?.total || 0);
     analyses['9.10_hidrografia'].rica_em_agua = analyses['9.10_hidrografia'].cursos_agua_count > 5;
 
     // Geometrias dos rios (sem ST_Intersection — bbox prefilter, limite reduzido)
     const riosGeomRes = await safeQuery(`
-      SELECT ST_AsGeoJSON(c.geom) AS geom
-      FROM hidrografia.geoft_bho_2017_curso_dagua c
-      WHERE c.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        AND ST_Intersects(
-              CASE WHEN ST_SRID(c.geom) = 0 THEN ST_SetSRID(c.geom, ${SRID}) ELSE c.geom END,
-              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-            )
+      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
+      SELECT ST_AsGeoJSON(ST_Transform(c.geom, 4674)) AS geom
+      FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
+      WHERE c.geom && parc.p
+        AND ST_Intersects(c.geom, parc.p)
       LIMIT 50
     `, [geojsonStr]);
     analyses['9.10_hidrografia'].rios_geom = (riosGeomRes.rows || []).map(r => { try { return JSON.parse(r.geom); } catch { return null; } }).filter(Boolean);
@@ -1272,9 +1268,10 @@ app.post('/api/analises', async (req, res) => {
       ),
       raw_segs AS (
         -- Achata MULTILINESTRING → LineStrings para que ST_StartPoint/ST_EndPoint funcionem
-        SELECT (ST_Dump(c.geom)).geom AS seg
-        FROM hidrografia.geoft_bho_2017_curso_dagua c
-        WHERE ST_Intersects(c.geom, (SELECT bg FROM buffer25))
+        SELECT (ST_Dump(ST_Transform(c.geom, 4674))).geom AS seg
+        FROM hidrografia.geoft_bho_2017_curso_dagua c, (SELECT ST_Transform(bg, 4326) AS bg326 FROM buffer25) bb
+        WHERE c.geom && bb.bg326
+          AND ST_Intersects(c.geom, bb.bg326)
       ),
       courses AS (
         SELECT
@@ -1382,26 +1379,26 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
 
     const compParcelRes = await safeQuery(`
-      SELECT COALESCE(SUM(ST_Length(ST_Intersection(ST_SetSRID(c.geom, 4326), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4326))::geography)), 0) AS len_m
-      FROM hidrografia.geoft_bho_2017_curso_dagua c
-      WHERE ST_Intersects(ST_SetSRID(c.geom, 4326), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4326))
+      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
+      SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, parc.p)::geography)), 0) AS len_m
+      FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
+      WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
     `, [geojsonStr]);
     // Nomes de rios: hidrografia.rio_nomes (NORIOCOMP) — ST_DWithin 100m
     const nomesRes = await safeQuery(`
+      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
       SELECT DISTINCT "NORIOCOMP"::text AS nome
-      FROM hidrografia.rio_nomes
-      WHERE ST_DWithin(
-              geom::geography,
-              ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)::geography,
-              100
-            )
+      FROM hidrografia.rio_nomes rn, parc
+      WHERE rn.geom && ST_Expand(parc.p, 0.001)
+        AND ST_DWithin(rn.geom::geography, parc.p::geography, 100)
         AND "NORIOCOMP" IS NOT NULL AND TRIM("NORIOCOMP"::text) <> ''
       LIMIT 50
     `, [geojsonStr]);
     const ordensRes = await safeQuery(`
+      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
-      FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE ST_Intersects(ST_SetSRID(geom, 4326), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4326))
+      FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
+      WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
       GROUP BY nuordemcda ORDER BY nuordemcda DESC
     `, [geojsonStr]);
 
