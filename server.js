@@ -1148,7 +1148,7 @@ app.post('/api/analises', async (req, res) => {
           ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
         ), 0.001)) as geom_json
       FROM terra_indigena.poligonais_portarias
-            WHERE ST_Intersects()
+            WHERE ST_Intersects(
                 ST_MakeValid(ST_SetSRID(geom::geometry, ${SRID})),
                 ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}))
       )
@@ -1369,9 +1369,9 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
 
     const compParcelRes = await safeQuery(`
-      SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))::geography)), 0) AS len_m
+      SELECT COALESCE(SUM(ST_Length(ST_Intersection(ST_SetSRID(c.geom, 4326), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4326))::geography)), 0) AS len_m
       FROM hidrografia.geoft_bho_2017_curso_dagua c
-      WHERE ST_Intersects(c.geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ST_Intersects(ST_SetSRID(c.geom, 4326), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4326))
     `, [geojsonStr]);
     // Nomes de rios: hidrografia.rio_nomes (NORIOCOMP) — ST_DWithin 100m
     const nomesRes = await safeQuery(`
@@ -1388,7 +1388,7 @@ app.post('/api/analises', async (req, res) => {
     const ordensRes = await safeQuery(`
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
       FROM hidrografia.geoft_bho_2017_curso_dagua
-      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+      WHERE ST_Intersects(ST_SetSRID(geom, 4326), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4326))
       GROUP BY nuordemcda ORDER BY nuordemcda DESC
     `, [geojsonStr]);
 
