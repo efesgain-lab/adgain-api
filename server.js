@@ -1268,7 +1268,7 @@ app.post('/api/analises', async (req, res) => {
       WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
       centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
       buffer25 AS (
-        SELECT ST_Buffer(c::geography, ${RAIO_DRENAGEM_KM * 1000})::geometry AS bg FROM centroid_pt
+        SELECT ST_Expand(c, ${RAIO_DRENAGEM_KM} / 111.0) AS bg FROM centroid_pt
       ),
       raw_segs AS (
         -- Achata MULTILINESTRING → LineStrings para que ST_StartPoint/ST_EndPoint funcionem
