@@ -5,7 +5,7 @@ const cors = require('cors');
 const { Pool } = require('pg'); // v2
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3000; 
 
 // Middleware
 app.use(cors());
@@ -1243,6 +1243,21 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.10_hidrografia'].cursos_agua_count = parseInt(cursosResult.rows[0]?.total || 0);
     analyses['9.10_hidrografia'].rica_em_agua = analyses['9.10_hidrografia'].cursos_agua_count > 5;
+
+    // Geometrias dos rios para overlay no mapa SVG (clipped na parcela)
+    const riosGeomRes = await safeQuery(`
+      SELECT ST_AsGeoJSON(ST_Intersection(
+          CASE WHEN ST_SRID(c.geom) = 0 THEN ST_SetSRID(c.geom, ${SRID}) ELSE c.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        )) AS geom
+      FROM hidrografia.geoft_bho_2017_curso_dagua c
+      WHERE ST_Intersects(
+          CASE WHEN ST_SRID(c.geom) = 0 THEN ST_SetSRID(c.geom, ${SRID}) ELSE c.geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        )
+      LIMIT 200
+    `, [geojsonStr]);
+    analyses['9.10_hidrografia'].rios_geom = (riosGeomRes.rows || []).map(r => { try { return JSON.parse(r.geom); } catch { return null; } }).filter(Boolean);
 
         // Padrao de drenagem — analise tecnica combinada: azimute + convergencia + terreno (25km do centroide)
     const RAIO_DRENAGEM_KM = 25;
