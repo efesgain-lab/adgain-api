@@ -1506,22 +1506,21 @@ app.post('/api/analises', async (req, res) => {
 
     // Geometria dos cursos d'água para mapa SVG (buffer 25km centrado na parcela)
     const riosGeomResult = await safeQuery(`
-      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
-      centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
-      buf AS (SELECT ST_Expand(c, ${RAIO_DRENAGEM_KM} / 111.0) AS bg FROM centroid_pt)
+      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
       SELECT
         ST_AsGeoJSON(ST_SimplifyPreserveTopology((ST_Dump(c.geom)).geom, 0.0005)) AS geom_json,
-        COALESCE(NULLIF(TRIM(rn."NORIOCOMP"::text), ''), '') AS nome
-      FROM hidrografia.geoft_bho_2017_curso_dagua c, buf
+        COALESCE(NULLIF(TRIM(rn."NORIOCOMP"::text), ''), '') AS nome,
+        COALESCE(c.nuordemcda, 0) AS ordem
+      FROM hidrografia.geoft_bho_2017_curso_dagua c, parcel
       LEFT JOIN LATERAL (
         SELECT "NORIOCOMP" FROM hidrografia.rio_nomes rn2
         WHERE rn2.geom && c.geom
           AND ST_DWithin(rn2.geom::geography, ST_Centroid(c.geom)::geography, 100)
         LIMIT 1
       ) rn ON true
-      WHERE c.geom && buf.bg AND ST_Intersects(c.geom, buf.bg)
+      WHERE c.geom && parcel.g AND ST_Intersects(c.geom, parcel.g)
       ORDER BY COALESCE(c.nuordemcda, 0) DESC NULLS LAST
-      LIMIT 2000
+      LIMIT 5000
     `, [geojsonStr]);
     analyses['9.10_hidrografia'].rios_geom = riosGeomResult.rows || [];
 
