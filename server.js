@@ -1236,7 +1236,7 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].bacias = baciasRows;
 
     let cursosResult = await safeQuery(`
-      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
+      WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p)
       SELECT COUNT(*) as total
       FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
       WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
@@ -1246,12 +1246,13 @@ app.post('/api/analises', async (req, res) => {
 
     // Geometrias dos rios (sem ST_Intersection — bbox prefilter, limite reduzido)
     const riosGeomRes = await safeQuery(`
-      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
-      SELECT ST_AsGeoJSON(ST_SetSRID(c.geom, 4674)) AS geom
+      WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p)
+      SELECT ST_AsGeoJSON(ST_SimplifyPreserveTopology(c.geom, 0.0005)) AS geom,
+             COALESCE(c.nuordemcda, 0) AS ordem
       FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
-      WHERE c.geom && parc.p
-        AND ST_Intersects(c.geom, parc.p)
-      LIMIT 50
+      WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
+      ORDER BY COALESCE(c.nuordemcda, 0) DESC NULLS LAST
+      LIMIT 2000
     `, [geojsonStr]);
     analyses['9.10_hidrografia'].rios_geom = (riosGeomRes.rows || []).map(r => { try { return JSON.parse(r.geom); } catch { return null; } }).filter(Boolean);
 
@@ -1270,10 +1271,10 @@ app.post('/api/analises', async (req, res) => {
       ),
       raw_segs AS (
         -- Achata MULTILINESTRING → LineStrings para que ST_StartPoint/ST_EndPoint funcionem
-        SELECT (ST_Dump(ST_SetSRID(c.geom, 4674))).geom AS seg
-        FROM hidrografia.geoft_bho_2017_curso_dagua c, (SELECT ST_Transform(bg, 4326) AS bg326 FROM buffer25) bb
-        WHERE c.geom && bb.bg326
-          AND ST_Intersects(c.geom, bb.bg326)
+        SELECT (ST_Dump(c.geom)).geom AS seg
+        FROM hidrografia.geoft_bho_2017_curso_dagua c, buffer25 bb
+        WHERE c.geom && bb.bg
+          AND ST_Intersects(c.geom, bb.bg)
       ),
       courses AS (
         SELECT
@@ -1381,7 +1382,7 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
 
     const compParcelRes = await safeQuery(`
-      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
+      WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p)
       SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, parc.p)::geography)), 0) AS len_m
       FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
       WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
@@ -1397,7 +1398,7 @@ app.post('/api/analises', async (req, res) => {
       LIMIT 50
     `, [geojsonStr]);
     const ordensRes = await safeQuery(`
-      WITH parc AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326) AS p)
+      WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p)
       SELECT nuordemcda AS ordem, COUNT(*)::int AS cnt
       FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
       WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
@@ -1788,7 +1789,7 @@ app.post('/api/analises', async (req, res) => {
       SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras,
         ST_AsGeoJSON(geom) as geom_json
       FROM geologia_litologia."ocorrências_br"
-      WHERE ST_Intersects(geom, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 4326))
+      WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].geologia.ocorrencias = ocorrenciasResult.rows;
     analyses['9.5_geologia'].ocorrencias = ocorrenciasResult.rows;
