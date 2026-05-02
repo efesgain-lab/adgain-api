@@ -1865,7 +1865,7 @@ app.post('/api/analises', async (req, res) => {
 
     const continentStructureResult = await safeQuery(`
       SELECT id, type as tipo, name, ${tecGeomLinha} as geom_json
-      FROM tectonic_map.continent_structure WHERE ${tectonicGeoFilter}
+      FROM tectonic_map.continent_structure WHERE ${tectonicGeoIntersect}
     `, [geojsonStr]);
     analyses['9.14_analises_adicionais'].tectonicas.continent_structure = continentStructureResult.rows;
 
