@@ -1615,20 +1615,20 @@ app.post('/api/analises', async (req, res) => {
     try {
       const aqRes = await safeQuery(`
         WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
-        SELECT 'poroso' AS tipo, "Name" AS nome, descriptio
+        SELECT 'poroso' AS tipo, "SAQ_NM_NOM" AS nome, "SAQ_CD_COD" AS codigo, "SAQ_AR_KM2" AS area_km2
         FROM aquifero_br.aquiferos_poroso a, parc
         WHERE a.geom && parc.g AND ST_Intersects(a.geom, parc.g)
         UNION ALL
-        SELECT 'fraturado', "Name", descriptio
+        SELECT 'fraturado', "SAQ_NM_NOM", "SAQ_CD_COD", "SAQ_AR_KM2"
         FROM aquifero_br.aquiferos_fraturado a, parc
         WHERE a.geom && parc.g AND ST_Intersects(a.geom, parc.g)
         UNION ALL
-        SELECT 'carstico', "Name", descriptio
+        SELECT 'carstico', "SAQ_NM_NOM", "SAQ_CD_COD", "SAQ_AR_KM2"
         FROM aquifero_br.aquiferos_carstico a, parc
         WHERE a.geom && parc.g AND ST_Intersects(a.geom, parc.g)
       `, [geojsonStr]);
       for (const row of (aqRes?.rows || [])) {
-        const item = { nome: row.nome || '', descricao: row.descriptio || '' };
+        const item = { nome: row.nome || '', codigo: row.codigo || '', area_km2: row.area_km2 || null };
         const tgt = analyses['9.13b_aquiferos'];
         if (row.tipo === 'poroso') { tgt.poroso.push(item); tgt.data.poroso.push(item); }
         else if (row.tipo === 'fraturado') { tgt.fraturado.push(item); tgt.data.fraturado.push(item); }
