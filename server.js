@@ -1566,23 +1566,34 @@ app.post('/api/analises', async (req, res) => {
     // Total (Mg C) = SUM(val × pixel_area_ha)
     // pixel_area_ha = |ScaleX × ScaleY| em graus² × cos(lat) × 111320² / 10000
     analyses['9.12_carbono'] = { nome: 'Carbono', total_toneladas: null };
-    let carbonoResult = await safeQuery(`
+    let carbonoResult = { rows: [{ total_toneladas: null }] };
+    try {
+      const carbClient = await pool.connect();
+      try {
+        await carbClient.query("SET LOCAL statement_timeout = '60s'");
+        carbonoResult = await carbClient.query(`
       WITH parcel_geom AS (
         SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
       ),
+      parcel_lat AS (SELECT ST_Y(ST_Centroid(g)) AS lat FROM parcel_geom),
+      sample AS (SELECT ABS(ST_ScaleX(rast)) * ABS(ST_ScaleY(rast)) AS sx FROM carbono_solo.carbono_2024 LIMIT 1),
       tile_stats AS (
-        SELECT
-          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).sum AS pixel_sum,
-          ABS(ST_ScaleX(r.rast)) * ABS(ST_ScaleY(r.rast))
-            * COS(RADIANS(ST_Y(ST_Centroid(ST_Envelope(r.rast)))))
-            * 111320.0 * 111320.0 / 10000.0 AS pixel_area_ha
+        SELECT (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).sum AS pixel_sum
         FROM carbono_solo.carbono_2024 r, parcel_geom pg
         WHERE ST_Intersects(r.rast, pg.g)
       )
-      SELECT ROUND(CAST(COALESCE(SUM(pixel_sum * pixel_area_ha), 0) AS numeric), 2) AS total_toneladas
-      FROM tile_stats
-      WHERE pixel_sum IS NOT NULL
+      SELECT ROUND(CAST(
+        COALESCE(SUM(pixel_sum), 0) * sample.sx * COS(RADIANS(parcel_lat.lat)) * 111320.0 * 111320.0 / 10000.0
+      AS numeric), 2) AS total_toneladas
+      FROM tile_stats, sample, parcel_lat
+      GROUP BY sample.sx, parcel_lat.lat
     `, [geojsonStr]);
+      } finally {
+        carbClient.release();
+      }
+    } catch (e) {
+      console.warn('[CARBONO] failed:', e.message);
+    }
     if (carbonoResult.rows[0]) {
       analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
     }
