@@ -1570,19 +1570,18 @@ app.post('/api/analises', async (req, res) => {
       WITH parcel_geom AS (
         SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
       ),
-      clipped AS (
+      tile_stats AS (
         SELECT
-          ST_Clip(r.rast, pg.g, true) AS rast_clip,
+          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).sum AS pixel_sum,
           ABS(ST_ScaleX(r.rast)) * ABS(ST_ScaleY(r.rast))
             * COS(RADIANS(ST_Y(ST_Centroid(ST_Envelope(r.rast)))))
             * 111320.0 * 111320.0 / 10000.0 AS pixel_area_ha
         FROM carbono_solo.carbono_2024 r, parcel_geom pg
         WHERE ST_Intersects(r.rast, pg.g)
       )
-      SELECT ROUND(CAST(SUM(v.val * c.pixel_area_ha) AS numeric), 2) AS total_toneladas
-      FROM clipped c,
-           LATERAL ST_PixelAsPoints(c.rast_clip) v
-      WHERE v.val IS NOT NULL AND v.val > 0
+      SELECT ROUND(CAST(COALESCE(SUM(pixel_sum * pixel_area_ha), 0) AS numeric), 2) AS total_toneladas
+      FROM tile_stats
+      WHERE pixel_sum IS NOT NULL
     `, [geojsonStr]);
     if (carbonoResult.rows[0]) {
       analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
