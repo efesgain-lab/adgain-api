@@ -2,7 +2,7 @@ require('dotenv').config() // init // xx
    
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg'); // v2
+const { Pool, Client } = require('pg'); // v2
 
 const app = express();
 const port = process.env.PORT || 3000; 
@@ -1569,9 +1569,19 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.12_carbono'] = { nome: 'Carbono', total_toneladas: null };
     let carbonoResult = { rows: [{ total_toneladas: null }] };
     try {
-      const carbClient = await pool.connect();
+      const carbClient = new Client({
+        host: process.env.DB_HOST,
+        port: parseInt(process.env.DB_PORT || '5432'),
+        database: process.env.DB_NAME,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASS,
+        ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+        statement_timeout: 65000,
+        family: 4
+      });
+      await carbClient.connect();
       try {
-        await carbClient.query("SET statement_timeout = '60s'"); console.log('[CARBONO] starting query');
+        console.log('[CARBONO] starting query (Client direct, statement_timeout 65s)');
         carbonoResult = await carbClient.query(`
       WITH parcel_geom AS (
         SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
@@ -1590,7 +1600,7 @@ app.post('/api/analises', async (req, res) => {
       GROUP BY sample.sx, parcel_lat.lat
     `, [geojsonStr]);
       } finally {
-        carbClient.release();
+        await carbClient.end();
       }
     } catch (e) {
       console.warn('[CARBONO] failed:', e.message);
