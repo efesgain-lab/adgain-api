@@ -1570,7 +1570,7 @@ app.post('/api/analises', async (req, res) => {
     try {
       const carbClient = await pool.connect();
       try {
-        await carbClient.query("SET LOCAL statement_timeout = '60s'");
+        await carbClient.query("SET statement_timeout = '60s'"); console.log('[CARBONO] starting query');
         carbonoResult = await carbClient.query(`
       WITH parcel_geom AS (
         SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
@@ -1594,9 +1594,37 @@ app.post('/api/analises', async (req, res) => {
     } catch (e) {
       console.warn('[CARBONO] failed:', e.message);
     }
+    console.log('[CARBONO] result:', JSON.stringify(carbonoResult.rows[0] || {}));
     if (carbonoResult.rows[0]) {
       analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
     }
+
+    // 9.12b Aquíferos (poroso, fraturado, cárstico)
+    analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', poroso: [], fraturado: [], carstico: [], data: { poroso: [], fraturado: [], carstico: [] } };
+    try {
+      const aqRes = await safeQuery(`
+        WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
+        SELECT 'poroso' AS tipo, "Name" AS nome, descriptio
+        FROM aquifero_br.aquiferos_poroso a, parc
+        WHERE a.geom && parc.g AND ST_Intersects(a.geom, parc.g)
+        UNION ALL
+        SELECT 'fraturado', "Name", descriptio
+        FROM aquifero_br.aquiferos_fraturado a, parc
+        WHERE a.geom && parc.g AND ST_Intersects(a.geom, parc.g)
+        UNION ALL
+        SELECT 'carstico', "Name", descriptio
+        FROM aquifero_br.aquiferos_carstico a, parc
+        WHERE a.geom && parc.g AND ST_Intersects(a.geom, parc.g)
+      `, [geojsonStr]);
+      for (const row of (aqRes?.rows || [])) {
+        const item = { nome: row.nome || '', descricao: row.descriptio || '' };
+        const tgt = analyses['9.13b_aquiferos'];
+        if (row.tipo === 'poroso') { tgt.poroso.push(item); tgt.data.poroso.push(item); }
+        else if (row.tipo === 'fraturado') { tgt.fraturado.push(item); tgt.data.fraturado.push(item); }
+        else if (row.tipo === 'carstico') { tgt.carstico.push(item); tgt.data.carstico.push(item); }
+      }
+      console.log('[AQUIFEROS] poroso:', analyses['9.13b_aquiferos'].poroso.length, 'fraturado:', analyses['9.13b_aquiferos'].fraturado.length, 'carstico:', analyses['9.13b_aquiferos'].carstico.length);
+    } catch (e) { console.warn('[AQUIFEROS] failed:', e.message); }
 
     // 9.13 CAR (área, APP, reserva legal, vegetação nativa)
     analyses['9.13_car'] = {
