@@ -1611,7 +1611,7 @@ app.post('/api/analises', async (req, res) => {
     }
 
     // 9.12b Aquíferos (poroso, fraturado, cárstico)
-    analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', poroso: [], fraturado: [], carstico: [], data: { poroso: [], fraturado: [], carstico: [] } };
+    analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', poroso: [], fraturado: [], carstico: [], data: [] };
     try {
       const aqRes = await safeQuery(`
         WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
@@ -1630,9 +1630,12 @@ app.post('/api/analises', async (req, res) => {
       for (const row of (aqRes?.rows || [])) {
         const item = { nome: row.nome || '', codigo: row.codigo || '', area_km2: row.area_km2 || null };
         const tgt = analyses['9.13b_aquiferos'];
-        if (row.tipo === 'poroso') { tgt.poroso.push(item); tgt.data.poroso.push(item); }
-        else if (row.tipo === 'fraturado') { tgt.fraturado.push(item); tgt.data.fraturado.push(item); }
-        else if (row.tipo === 'carstico') { tgt.carstico.push(item); tgt.data.carstico.push(item); }
+        const flatItem = { tipo_aquifero: row.tipo, nome: item.nome, codigo: item.codigo, area_km2: item.area_km2 };
+        if (row.tipo === 'poroso') tgt.poroso.push(item);
+        else if (row.tipo === 'fraturado') tgt.fraturado.push(item);
+        else if (row.tipo === 'carstico') tgt.carstico.push(item);
+        if (!Array.isArray(tgt.data)) tgt.data = [];
+        tgt.data.push(flatItem);
       }
       console.log('[AQUIFEROS] poroso:', analyses['9.13b_aquiferos'].poroso.length, 'fraturado:', analyses['9.13b_aquiferos'].fraturado.length, 'carstico:', analyses['9.13b_aquiferos'].carstico.length);
     } catch (e) { console.warn('[AQUIFEROS] failed:', e.message); }
