@@ -1561,6 +1561,7 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.11_altitude'].media_m = analyses['9.11_altitude'].ponto_m;
     }
 
+    console.log('[CARBONO] reached carbono block');
     // 9.12 Carbono do Solo
     // Raster armazena Mg C/ha (toneladas/ha por pixel).
     // Total (Mg C) = SUM(val × pixel_area_ha)
@@ -1758,32 +1759,7 @@ app.post('/api/analises', async (req, res) => {
       }
     }
 
-    // 9.13b Aquíferos
-    analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', data: [] };
-    // Try hidrogeologia schema first, then sgb, then hidrogeo
-    let aquiferosResult = await safeQuery(`
-      SELECT tipo_aquife as tipo, sistema_aqu as sistema, dominio as dominio,
-             descricao, area_km2 as area_sistema_km2
-      FROM hidrogeologia.sistemas_aquiferos
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
-        CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-      LIMIT 5
-    `, [geojsonStr]);
-    if (aquiferosResult.rows.length === 0) {
-      aquiferosResult = await safeQuery(`
-        SELECT tipo, sistema, dominio, descricao,
-               ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 1000000 AS numeric), 3) as area_sistema_km2
-        FROM hidrogeologia.aquiferos
-        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
-          CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        )
-        LIMIT 5
-      `, [geojsonStr]);
-    }
-    analyses['9.13b_aquiferos'].data = aquiferosResult.rows;
+    // (legacy aquiferos block removed - now at line ~1602)
 
     // 9.14 Análises Adicionais (Geologia Estrutural + Ocorrências + Tectônica)
     analyses['9.14_analises_adicionais'] = {
