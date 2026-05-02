@@ -1211,6 +1211,25 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
     analyses['9.9_ucs'].data = ucsResult.rows;
 
+    // Mapa de localização — municípios num raio de ~60km da parcela
+    analyses['localizacao_municipios_proximos'] = [];
+    try {
+      const muniProxRes = await safeQuery(`
+        WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+             centro AS (SELECT ST_Centroid(g) AS c FROM parc),
+             buffer AS (SELECT ST_Expand(c, 60.0/111.0) AS bg FROM centro)
+        SELECT
+          "NM_MUN" AS nome,
+          "CD_MUN" AS codigo,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, 0.005)) AS geom_json
+        FROM municipios.municipios_2024 m, buffer
+        WHERE m.geom && buffer.bg AND ST_Intersects(m.geom, buffer.bg)
+        LIMIT 30
+      `, [geojsonStr]);
+      analyses['localizacao_municipios_proximos'] = muniProxRes?.rows || [];
+      console.log('[LOCALIZACAO] municipios_proximos:', analyses['localizacao_municipios_proximos'].length);
+    } catch (e) { console.warn('[LOCALIZACAO] failed:', e.message); }
+
     // 9.10 Hidrografia
     analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0, rios_geom: [] };
 
@@ -2050,6 +2069,7 @@ app.post('/api/analises', async (req, res) => {
       solo_soilgrids: solo,
       municipio:  { NM_MUN: municipio.municipio, SIGLA_UF: municipio.uf, CD_MUN: '' },
       municipios: [{ nm_mun: municipio.municipio, sigla_uf: municipio.uf }],
+            localizacao_municipios_proximos: analyses['localizacao_municipios_proximos'] || [],
       centroide:  centroidParsed ? { lat: centroidParsed.coordinates[1], lng: centroidParsed.coordinates[0] } : { lat: 0, lng: 0 },
       area_total_ha: parseFloat(municipio.area_hectares) || 0,
       parcel_geojson: JSON.parse(geojsonStr),  // geometria da parcela analisada — usada para overlay nos mapas SVG
