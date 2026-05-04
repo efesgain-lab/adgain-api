@@ -520,7 +520,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
     const jid = Array.isArray(raw) ? raw[0] : raw;
     if (!jid || jid === 'null') throw new Error('null job');
     console.log('[CHIRPS] job=' + jid);
-    const dl = Date.now() + 240000;
+    const dl = Date.now() + 15000;
     let done = false;
     while (Date.now() < dl) {
       await new Promise(r => setTimeout(r, 3000));
