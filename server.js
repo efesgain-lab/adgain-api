@@ -510,7 +510,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
   // PRIMARY: CHIRPS v2.0 via ClimateSERV (0.05 deg / 5 km, 1994-2024)
   try {
     const body = new URLSearchParams({
-      datatype: '26', begintime: '01/01/1994', endtime: '12/31/2024',
+      datatype: '26', begintime: '01/01/2005', endtime: '12/31/2024',
       intervaltype: '0', operationtype: '5', callback: '', isZip_FILE: 'false',
       geometry: JSON.stringify({ type: 'Point', coordinates: [+lng.toFixed(5), +lat.toFixed(5)] })
     });
@@ -520,7 +520,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
     const jid = Array.isArray(raw) ? raw[0] : raw;
     if (!jid || jid === 'null') throw new Error('null job');
     console.log('[CHIRPS] job=' + jid);
-    const dl = Date.now() + 45000;
+    const dl = Date.now() + 110000;
     let done = false;
     while (Date.now() < dl) {
       await new Promise(r => setTimeout(r, 3000));
@@ -539,7 +539,7 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
     if (!rows.length) throw new Error('empty');
     const { mo, yr } = mkBuckets(rows, 'date', null);
     console.log('[CHIRPS] OK rows=' + rows.length);
-    return mkResult(mo, yr, 'CHIRPS v2.0 (1994-2024) 0.05 grau / 5 km');
+    return mkResult(mo, yr, 'CHIRPS v2.0 (2005-2024) 0.05 grau / 5 km');
   } catch(e) {
     console.warn('[CHIRPS] ClimateSERV failed:', e.message, '-> ERA5-Land fallback');
   }
