@@ -1658,15 +1658,18 @@ app.post('/api/analises', async (req, res) => {
       ),
       parcel_lat AS (SELECT ST_Y(ST_Centroid(g)) AS lat FROM parcel_geom),
       sample AS (SELECT ABS(ST_ScaleX(rast)) * ABS(ST_ScaleY(rast)) AS sx FROM carbono_solo.carbono_2024 LIMIT 1),
-      tile_stats AS (
-        SELECT
-          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).sum   AS s,
-          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).count AS c,
-          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).min   AS mn,
-          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).max   AS mx
+      clipped AS (
+        SELECT ST_SetBandNoDataValue(ST_Clip(r.rast, pg.g, true), 0) AS rast
         FROM carbono_solo.carbono_2024 r, parcel_geom pg
         WHERE ST_Intersects(r.rast, pg.g)
-      )
+      ),
+      tile_stats AS (
+        SELECT
+          (ST_SummaryStats(rast, 1, true)).sum   AS s,
+          (ST_SummaryStats(rast, 1, true)).count AS c,
+          (ST_SummaryStats(rast, 1, true)).min   AS mn,
+          (ST_SummaryStats(rast, 1, true)).max   AS mx
+        FROM clipped
       SELECT
         ROUND(CAST(COALESCE(SUM(s), 0) * sample.sx * COS(RADIANS(parcel_lat.lat)) * 111320.0 * 111320.0 / 10000.0 AS numeric), 2) AS total_toneladas,
         ROUND(CAST(COALESCE(SUM(s), 0) / NULLIF(SUM(c), 0) AS numeric), 2) AS media_t_ha,
