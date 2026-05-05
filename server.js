@@ -1670,6 +1670,7 @@ app.post('/api/analises', async (req, res) => {
           (ST_SummaryStats(rast, 1, true)).min   AS mn,
           (ST_SummaryStats(rast, 1, true)).max   AS mx
         FROM clipped
+      )
       SELECT
         ROUND(CAST(COALESCE(SUM(s), 0) * sample.sx * COS(RADIANS(parcel_lat.lat)) * 111320.0 * 111320.0 / 10000.0 AS numeric), 2) AS total_toneladas,
         ROUND(CAST(COALESCE(SUM(s), 0) / NULLIF(SUM(c), 0) AS numeric), 2) AS media_t_ha,
