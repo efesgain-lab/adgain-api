@@ -287,15 +287,12 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 
 
 // ─── Pluviometria PostGIS (PMA Brasil 1977-2006 do schema pluviometria) ───
-// Retorna a precipitação média anual (mm) calculada do raster local.
-// Aceita geojson como objeto/string, Feature ou FeatureCollection.
-// Raster está em SRID 4674 (SIRGAS 2000); aceita input em 4326 e transforma.
 async function fetchPluviometriaPostGIS(lat, lng, geojson) {
-  // Extrai geometry pura de Feature/FeatureCollection
+  console.log('[pluvio-postgis] CALLED lat=' + lat + ' lng=' + lng + ' has_geojson=' + (geojson ? typeof geojson : 'null'));
   function extractGeometry(g) {
     if (!g) return null;
     if (typeof g === 'string') {
-      try { g = JSON.parse(g); } catch { return null; }
+      try { g = JSON.parse(g); } catch (e) { console.log('[pluvio-postgis] JSON.parse falhou:', e.message); return null; }
     }
     if (g.type === 'Feature') return extractGeometry(g.geometry);
     if (g.type === 'FeatureCollection' && g.features?.length) return extractGeometry(g.features[0].geometry);
@@ -305,9 +302,10 @@ async function fetchPluviometriaPostGIS(lat, lng, geojson) {
   try {
     let pma = null;
     const geom = extractGeometry(geojson);
+    console.log('[pluvio-postgis] extracted geometry type:', geom?.type || 'null');
     if (geom && (geom.type === 'Polygon' || geom.type === 'MultiPolygon')) {
       try {
-        const { rows } = await pool.query(`
+        const r1 = await pool.query(`
           WITH parcel AS (
             SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::text), 4326), 4674) AS geom
           )
@@ -315,24 +313,31 @@ async function fetchPluviometriaPostGIS(lat, lng, geojson) {
           FROM pluviometria.precipitacao_brasil_1977_2006 r, parcel
           WHERE ST_Intersects(r.rast, parcel.geom)
         `, [JSON.stringify(geom)]);
-        pma = rows[0]?.pma_mm;
+        pma = r1.rows[0]?.pma_mm;
+        console.log('[pluvio-postgis] poligono retornou pma=' + pma + ' (rows=' + r1.rows.length + ')');
       } catch (ePoly) {
-        console.warn('[pluvio-postgis] poligono falhou, vai cair em ponto:', ePoly?.message);
+        console.warn('[pluvio-postgis] poligono falhou, fallback para ponto:', ePoly?.message);
       }
     }
     if (pma == null || pma < 0 || isNaN(pma)) {
-      const { rows } = await pool.query(`
+      const r2 = await pool.query(`
         SELECT ST_Value(r.rast, ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 4674))::float AS pma_mm
         FROM pluviometria.precipitacao_brasil_1977_2006 r
         WHERE ST_Intersects(r.rast, ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 4674))
         LIMIT 1
       `, [lng, lat]);
-      pma = rows[0]?.pma_mm;
+      pma = r2.rows[0]?.pma_mm;
+      console.log('[pluvio-postgis] ponto retornou pma=' + pma + ' (rows=' + r2.rows.length + ')');
     }
-    if (pma == null || pma < 0 || isNaN(pma)) return null;
-    return Math.round(pma);
+    if (pma == null || pma < 0 || isNaN(pma)) {
+      console.log('[pluvio-postgis] retornando null (pma invalido):', pma);
+      return null;
+    }
+    const result = Math.round(pma);
+    console.log('[pluvio-postgis] OK retornando ' + result + ' mm');
+    return result;
   } catch (e) {
-    console.warn('[pluvio-postgis] falhou:', e.message);
+    console.warn('[pluvio-postgis] excecao:', e.message, e.stack?.substring(0, 300));
     return null;
   }
 }
@@ -1996,7 +2001,9 @@ app.post('/api/analises', async (req, res) => {
 
           try {
 
-            const pmaPostgis = await fetchPluviometriaPostGIS(pLat, pLng, geojson);
+            console.log('[pluvio-override] iniciando, pluviometria_atual=' + (pluviometria ? 'OK' : 'null') + ' geojson_type=' + (typeof geojson));
+  const pmaPostgis = await fetchPluviometriaPostGIS(pLat, pLng, geojson);
+  console.log('[pluvio-override] pmaPostgis=' + pmaPostgis);
 
             if (pmaPostgis != null && pluviometria) {
 
