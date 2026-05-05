@@ -1987,7 +1987,7 @@ app.post('/api/analises', async (req, res) => {
 
           try {
 
-            const pmaPostgis = await fetchPluviometriaPostGIS(pLat, pLng, parcel_geojson);
+            const pmaPostgis = await fetchPluviometriaPostGIS(pLat, pLng, geojson);
 
             if (pmaPostgis != null && pluviometria) {
 
