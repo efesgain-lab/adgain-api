@@ -1466,8 +1466,8 @@ app.post('/api/analises', async (req, res) => {
       WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p)
       SELECT DISTINCT "NORIOCOMP"::text AS nome
       FROM hidrografia.rio_nomes rn, parc
-      WHERE rn.geom && ST_Expand(parc.p, 0.001)
-        AND ST_DWithin(rn.geom::geography, parc.p::geography, 100)
+      WHERE rn.geom && ST_Expand(parc.p, 0.0025)
+        AND ST_DWithin(rn.geom::geography, parc.p::geography, 200)
         AND "NORIOCOMP" IS NOT NULL AND TRIM("NORIOCOMP"::text) <> ''
       LIMIT 50
     `, [geojsonStr]);
