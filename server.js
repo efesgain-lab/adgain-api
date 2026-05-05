@@ -288,28 +288,43 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 
 // ─── Pluviometria PostGIS (PMA Brasil 1977-2006 do schema pluviometria) ───
 // Retorna a precipitação média anual (mm) calculada do raster local.
-// Se parcel_geojson for fornecido, faz a média sobre a área do polígono;
-// caso contrário, faz lookup pontual via ST_Value no centroide.
-async function fetchPluviometriaPostGIS(lat, lng, parcel_geojson) {
+// Aceita geojson como objeto/string, Feature ou FeatureCollection.
+// Raster está em SRID 4674 (SIRGAS 2000); aceita input em 4326 e transforma.
+async function fetchPluviometriaPostGIS(lat, lng, geojson) {
+  // Extrai geometry pura de Feature/FeatureCollection
+  function extractGeometry(g) {
+    if (!g) return null;
+    if (typeof g === 'string') {
+      try { g = JSON.parse(g); } catch { return null; }
+    }
+    if (g.type === 'Feature') return extractGeometry(g.geometry);
+    if (g.type === 'FeatureCollection' && g.features?.length) return extractGeometry(g.features[0].geometry);
+    if (['Polygon', 'MultiPolygon', 'Point', 'MultiPoint', 'LineString', 'MultiLineString'].includes(g.type)) return g;
+    return null;
+  }
   try {
     let pma = null;
-    if (parcel_geojson) {
-      const geom = typeof parcel_geojson === 'string' ? parcel_geojson : JSON.stringify(parcel_geojson);
-      const { rows } = await pool.query(`
-        WITH parcel AS (
-          SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::text), 4674) AS geom
-        )
-        SELECT AVG((ST_SummaryStats(ST_Clip(r.rast, parcel.geom), TRUE)).mean)::float AS pma_mm
-        FROM pluviometria.precipitacao_brasil_1977_2006 r, parcel
-        WHERE ST_Intersects(r.rast, parcel.geom)
-      `, [geom]);
-      pma = rows[0]?.pma_mm;
+    const geom = extractGeometry(geojson);
+    if (geom && (geom.type === 'Polygon' || geom.type === 'MultiPolygon')) {
+      try {
+        const { rows } = await pool.query(`
+          WITH parcel AS (
+            SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::text), 4326), 4674) AS geom
+          )
+          SELECT AVG((ST_SummaryStats(ST_Clip(r.rast, parcel.geom, true), 1, true)).mean)::float AS pma_mm
+          FROM pluviometria.precipitacao_brasil_1977_2006 r, parcel
+          WHERE ST_Intersects(r.rast, parcel.geom)
+        `, [JSON.stringify(geom)]);
+        pma = rows[0]?.pma_mm;
+      } catch (ePoly) {
+        console.warn('[pluvio-postgis] poligono falhou, vai cair em ponto:', ePoly?.message);
+      }
     }
     if (pma == null || pma < 0 || isNaN(pma)) {
       const { rows } = await pool.query(`
-        SELECT ST_Value(r.rast, ST_SetSRID(ST_MakePoint($1, $2), 4674))::float AS pma_mm
+        SELECT ST_Value(r.rast, ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 4674))::float AS pma_mm
         FROM pluviometria.precipitacao_brasil_1977_2006 r
-        WHERE ST_Intersects(r.rast, ST_SetSRID(ST_MakePoint($1, $2), 4674))
+        WHERE ST_Intersects(r.rast, ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 4674))
         LIMIT 1
       `, [lng, lat]);
       pma = rows[0]?.pma_mm;
@@ -322,12 +337,6 @@ async function fetchPluviometriaPostGIS(lat, lng, parcel_geojson) {
   }
 }
 
-/**
- * Fetches pluviometric data from ANA HidroWebservice for a given centroid.
- * Finds nearest conventional rainfall station within ±1.5° bounding box,
- * fetches 10 years of daily data and aggregates into monthly averages + annual totals.
- * Never throws — returns error object on failure.
- */
 async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
   const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const MAX_DIST_KM  = 600;
