@@ -1659,13 +1659,20 @@ app.post('/api/analises', async (req, res) => {
       parcel_lat AS (SELECT ST_Y(ST_Centroid(g)) AS lat FROM parcel_geom),
       sample AS (SELECT ABS(ST_ScaleX(rast)) * ABS(ST_ScaleY(rast)) AS sx FROM carbono_solo.carbono_2024 LIMIT 1),
       tile_stats AS (
-        SELECT (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).sum AS pixel_sum
+        SELECT
+          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).sum   AS s,
+          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).count AS c,
+          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).min   AS mn,
+          (ST_SummaryStats(ST_Clip(r.rast, pg.g, true), 1, true)).max   AS mx
         FROM carbono_solo.carbono_2024 r, parcel_geom pg
         WHERE ST_Intersects(r.rast, pg.g)
       )
-      SELECT ROUND(CAST(
-        COALESCE(SUM(pixel_sum), 0) * sample.sx * COS(RADIANS(parcel_lat.lat)) * 111320.0 * 111320.0 / 10000.0
-      AS numeric), 2) AS total_toneladas
+      SELECT
+        ROUND(CAST(COALESCE(SUM(s), 0) * sample.sx * COS(RADIANS(parcel_lat.lat)) * 111320.0 * 111320.0 / 10000.0 AS numeric), 2) AS total_toneladas,
+        ROUND(CAST(COALESCE(SUM(s), 0) / NULLIF(SUM(c), 0) AS numeric), 2) AS media_t_ha,
+        ROUND(CAST(MIN(mn) AS numeric), 2) AS min_t_ha,
+        ROUND(CAST(MAX(mx) AS numeric), 2) AS max_t_ha,
+        COALESCE(SUM(c), 0) AS pixels_validos
       FROM tile_stats, sample, parcel_lat
       GROUP BY sample.sx, parcel_lat.lat
     `, [geojsonStr]);
@@ -1678,6 +1685,10 @@ app.post('/api/analises', async (req, res) => {
     console.log('[CARBONO] result:', JSON.stringify(carbonoResult.rows[0] || {}));
     if (carbonoResult.rows[0]) {
       analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
+      analyses['9.12_carbono'].media_t_ha = carbonoResult.rows[0].media_t_ha;
+      analyses['9.12_carbono'].min_t_ha = carbonoResult.rows[0].min_t_ha;
+      analyses['9.12_carbono'].max_t_ha = carbonoResult.rows[0].max_t_ha;
+      analyses['9.12_carbono'].pixels_validos = carbonoResult.rows[0].pixels_validos;
     }
 
     // 9.12b Aquíferos (poroso, fraturado, cárstico)
