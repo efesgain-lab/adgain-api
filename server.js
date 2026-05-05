@@ -1452,10 +1452,14 @@ app.post('/api/analises', async (req, res) => {
     `, [geojsonStr]);
 
     const compParcelRes = await safeQuery(`
-      WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p)
-      SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, parc.p)::geography)), 0) AS len_m
-      FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
-      WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
+      WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p),
+           parc_buf AS (
+             -- Buffer de 200m para fora da parcela (geodesic)
+             SELECT ST_SetSRID(ST_Buffer(p::geography, 200)::geometry, 4674) AS pb FROM parc
+           )
+      SELECT COALESCE(SUM(ST_Length(ST_Intersection(c.geom, parc_buf.pb)::geography)), 0) AS len_m
+      FROM hidrografia.geoft_bho_2017_curso_dagua c, parc_buf
+      WHERE c.geom && parc_buf.pb AND ST_Intersects(c.geom, parc_buf.pb)
     `, [geojsonStr]);
     // Nomes de rios: hidrografia.rio_nomes (NORIOCOMP) — ST_DWithin 100m
     const nomesRes = await safeQuery(`
