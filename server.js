@@ -1688,8 +1688,8 @@ app.post('/api/analises', async (req, res) => {
     }
     console.log('[CARBONO] result:', JSON.stringify(carbonoResult.rows[0] || {}));
     if (carbonoResult.rows[0]) {
-      analyses['9.12_carbono'].estoque_total_toneladas = carbonoResult.rows[0].total_toneladas;
-      analyses['9.12_carbono'].medio_t_ha = carbonoResult.rows[0].media_t_ha;
+      analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
+      analyses['9.12_carbono'].media_t_ha = carbonoResult.rows[0].media_t_ha;
       analyses['9.12_carbono'].min_t_ha = carbonoResult.rows[0].min_t_ha;
       analyses['9.12_carbono'].max_t_ha = carbonoResult.rows[0].max_t_ha;
       analyses['9.12_carbono'].pixels_validos = carbonoResult.rows[0].pixels_validos;
@@ -2147,7 +2147,7 @@ app.post('/api/analises', async (req, res) => {
       },
       carbono: {
         estoque_total_toneladas: analyses['9.12_carbono'].total_toneladas,
-        min_t_ha: null, max_t_ha: null, medio_t_ha: null,
+        medio_t_ha: analyses['9.12_carbono'].media_t_ha, min_t_ha: analyses['9.12_carbono'].min_t_ha, max_t_ha: analyses['9.12_carbono'].max_t_ha,
       },
       car: {
         imoveis:                  analyses['9.13_car'].area_imovel,
