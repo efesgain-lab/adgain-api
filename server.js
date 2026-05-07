@@ -1222,36 +1222,48 @@ app.post('/api/analises', async (req, res) => {
     }
     analyses['9.8_terras_indigenas'].data = tisResult.rows;
 
-    // 9.9 Unidades de Conservação
+    // ── PARALELIZADO: UCs + muniProx + 5 bacias (níveis 2-6) — todas independentes ──
     analyses['9.9_ucs'] = { nome: 'Unidades de Conservação', data: [] };
-    let ucsResult = await safeQuery(`
-      SELECT id,
-        "NOME_UC1" as nome,
-        "CATEGORI3" as categoria,
-        "GRUPO4" as grupo,
-        "ESFERA5" as esfera,
-        "ANO_CRIA6" as ano_criacao,
-        "ATO_LEGA9" as ato_legal,
-        ROUND(CAST(ST_Area(ST_Intersection(
+    analyses['localizacao_municipios_proximos'] = [];
+    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0, rios_geom: [] };
+
+    console.time('[par] ucs+muniprox+bacias');
+    const baciasPromises = [2, 3, 4, 5, 6].map(nivel =>
+      pool.query(`
+        SELECT nome_bacia, curso_prin, princ_aflu, sub_bacias, suprabacia, ${nivel} as nivel
+        FROM bacias_hidrograficas.bacias_nivel_${nivel}
+        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
           CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
           ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        )) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as sobreposicao_percentual,
-        ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Intersection(
-          CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-        ), 0.001)) as geom_json
-      FROM unidade_conservacao.unidade_conserv
-      WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
-        CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-      )
-    `, [geojsonStr]);
-    analyses['9.9_ucs'].data = ucsResult.rows;
+        )
+        LIMIT 1
+      `, [geojsonStr]).catch(e => { console.error(`[bacia] nivel=${nivel} ERROR: ${e.message}`); return { rows: [] }; })
+    );
 
-    // Mapa de localização — municípios num raio de ~60km da parcela
-    analyses['localizacao_municipios_proximos'] = [];
-    try {
-      const muniProxRes = await safeQuery(`
+    const [ucsResult, muniProxResult, ...baciasResults] = await Promise.all([
+      safeQuery(`
+        SELECT id,
+          "NOME_UC1" as nome,
+          "CATEGORI3" as categoria,
+          "GRUPO4" as grupo,
+          "ESFERA5" as esfera,
+          "ANO_CRIA6" as ano_criacao,
+          "ATO_LEGA9" as ato_legal,
+          ROUND(CAST(ST_Area(ST_Intersection(
+            CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          )) / ST_Area(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)) * 100 AS numeric), 2) as sobreposicao_percentual,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Intersection(
+            CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          ), 0.001)) as geom_json
+        FROM unidade_conservacao.unidade_conserv
+        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
+          CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+        )
+      `, [geojsonStr]),
+      safeQuery(`
         WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
              centro AS (SELECT ST_Centroid(g) AS c FROM parc),
              buffer AS (SELECT ST_Expand(c, 60.0/111.0) AS bg FROM centro)
@@ -1262,33 +1274,15 @@ app.post('/api/analises', async (req, res) => {
         FROM municipios.municipios_2024 m, buffer
         WHERE m.geom && buffer.bg AND ST_Intersects(m.geom, buffer.bg)
         LIMIT 30
-      `, [geojsonStr]);
-      analyses['localizacao_municipios_proximos'] = muniProxRes?.rows || [];
-      console.log('[LOCALIZACAO] municipios_proximos:', analyses['localizacao_municipios_proximos'].length);
-    } catch (e) { console.warn('[LOCALIZACAO] failed:', e.message); }
+      `, [geojsonStr]).catch(e => { console.warn('[LOCALIZACAO] failed:', e.message); return { rows: [] }; }),
+      ...baciasPromises,
+    ]);
+    console.timeEnd('[par] ucs+muniprox+bacias');
 
-    // 9.10 Hidrografia
-    analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0, rios_geom: [] };
-
-    // Bacias hidrográficas — tenta bacias_nivel_2 a bacias_nivel_6 no schema bacias_hidrograficas
+    analyses['9.9_ucs'].data = ucsResult.rows;
+    analyses['localizacao_municipios_proximos'] = muniProxResult?.rows || [];
     const baciasRows = [];
-    for (const nivel of [2, 3, 4, 5, 6]) {
-      try {
-        const r = await pool.query(`
-          SELECT nome_bacia, curso_prin, princ_aflu, sub_bacias, suprabacia, ${nivel} as nivel
-          FROM bacias_hidrograficas.bacias_nivel_${nivel}
-          WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AND ST_Intersects(
-            CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-          )
-          LIMIT 1
-        `, [geojsonStr]);
-        console.log(`[bacia] nivel=${nivel} rows=${r.rows.length}`);
-        if (r.rows.length > 0) baciasRows.push(...r.rows);
-      } catch (e) {
-        console.error(`[bacia] nivel=${nivel} ERROR: ${e.message}`);
-      }
-    }
+    baciasResults.forEach(r => { if (r?.rows?.length > 0) baciasRows.push(...r.rows); });
     analyses['9.10_hidrografia'].bacias = baciasRows;
 
     // ── PARALELIZADO: 8 queries de hidrografia (todas independentes — mesmo geojsonStr) ──
@@ -1670,131 +1664,99 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
     analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
 
-    // Geometria dos cursos d'água para mapa SVG (buffer 25km centrado na parcela)
-    const riosGeomResult = await safeQuery(`
-      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
-      SELECT
-        ST_AsGeoJSON(ST_SimplifyPreserveTopology((ST_Dump(c.geom)).geom, 0.0005)) AS geom_json,
-        COALESCE(NULLIF(TRIM(rn."NORIOCOMP"::text), ''), '') AS nome,
-        COALESCE(c.nuordemcda, 0) AS ordem
-      FROM hidrografia.geoft_bho_2017_curso_dagua c, parcel
-      LEFT JOIN LATERAL (
-        SELECT "NORIOCOMP" FROM hidrografia.rio_nomes rn2
-        WHERE rn2.geom && c.geom
-          AND ST_DWithin(rn2.geom::geography, ST_Centroid(c.geom)::geography, 100)
-        LIMIT 1
-      ) rn ON true
-      WHERE c.geom && parcel.g AND ST_Intersects(c.geom, parcel.g)
-      ORDER BY COALESCE(c.nuordemcda, 0) DESC NULLS LAST
-      LIMIT 5000
-    `, [geojsonStr]);
-    analyses['9.10_hidrografia'].rios_geom = riosGeomResult.rows || [];
-
-
-    // 9.11 Altitude
+    // ── PARALELIZADO: riosGeomResult + altitude + carbono + aquíferos (4 blocos independentes) ──
     analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null };
-    let altitudeResult = await safeQuery(`
-      SELECT
-        MIN(v.val) as min_alt,
-        MAX(v.val) as max_alt,
-        ROUND(CAST(AVG(v.val) AS numeric), 1) as avg_alt
-      FROM altitude_br.altitude_raster r,
-           LATERAL ST_PixelAsPoints(ST_Clip(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) v
-      WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
-        AND v.val IS NOT NULL
-    `, [geojsonStr]);
-    if (altitudeResult.rows[0]) {
-      analyses['9.11_altitude'].min_m = altitudeResult.rows[0].min_alt;
-      analyses['9.11_altitude'].max_m = altitudeResult.rows[0].max_alt;
-      analyses['9.11_altitude'].media_m = altitudeResult.rows[0].avg_alt;
-    }
-    if (municipio.centroid) {
-      let centroidAltResult = await safeQuery(`
-        SELECT ST_Value(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1), 4674)) as altitude
-        FROM altitude_br.altitude_raster r
-        WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1), 4674))
-        LIMIT 1
-      `, [municipio.centroid]);
-      if (centroidAltResult.rows[0]) {
-        analyses['9.11_altitude'].ponto_m = centroidAltResult.rows[0].altitude;
-      }
-    }
-
-    // Fallback: se altitude (min/max/media) nao retornou dados, usa ponto_m
-    if (analyses['9.11_altitude'].min_m === null && analyses['9.11_altitude'].ponto_m !== null) {
-      analyses['9.11_altitude'].min_m = analyses['9.11_altitude'].ponto_m;
-      analyses['9.11_altitude'].max_m = analyses['9.11_altitude'].ponto_m;
-      analyses['9.11_altitude'].media_m = analyses['9.11_altitude'].ponto_m;
-    }
-
-    console.log('[CARBONO] reached carbono block');
-    // 9.12 Carbono do Solo
-    // Raster armazena Mg C/ha (toneladas/ha por pixel).
-    // Total (Mg C) = SUM(val × pixel_area_ha)
-    // pixel_area_ha = |ScaleX × ScaleY| em graus² × cos(lat) × 111320² / 10000
     analyses['9.12_carbono'] = { nome: 'Carbono', total_toneladas: null };
-    let carbonoResult = { rows: [{ total_toneladas: null }] };
-    try {
-      const carbClient = new Client({
-        host: process.env.DB_HOST,
-        port: parseInt(process.env.DB_PORT || '5432'),
-        database: process.env.DB_NAME,
-        user: process.env.DB_USER,
-        password: process.env.DB_PASS,
-        ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
-        statement_timeout: 65000,
-        family: 4
-      });
-      await carbClient.connect();
-      try {
-        console.log('[CARBONO] starting query (Client direct, statement_timeout 65s)');
-        carbonoResult = await carbClient.query(`
-      WITH parcel_geom AS (
-        SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
-      ),
-      parcel_lat AS (SELECT ST_Y(ST_Centroid(g)) AS lat FROM parcel_geom),
-      sample AS (SELECT ABS(ST_ScaleX(rast)) * ABS(ST_ScaleY(rast)) AS sx FROM carbono_solo.carbono_2024 LIMIT 1),
-      clipped AS (
-        SELECT ST_SetBandNoDataValue(ST_Clip(r.rast, pg.g, true), 0) AS rast
-        FROM carbono_solo.carbono_2024 r, parcel_geom pg
-        WHERE ST_Intersects(r.rast, pg.g)
-      ),
-      tile_stats AS (
-        SELECT
-          (ST_SummaryStats(rast, 1, true)).sum   AS s,
-          (ST_SummaryStats(rast, 1, true)).count AS c,
-          (ST_SummaryStats(rast, 1, true)).min   AS mn,
-          (ST_SummaryStats(rast, 1, true)).max   AS mx
-        FROM clipped
-      )
-      SELECT
-        ROUND(CAST(COALESCE(SUM(s), 0) * sample.sx * COS(RADIANS(parcel_lat.lat)) * 111320.0 * 111320.0 / 10000.0 AS numeric), 2) AS total_toneladas,
-        ROUND(CAST(COALESCE(SUM(s), 0) / NULLIF(SUM(c), 0) AS numeric), 2) AS media_t_ha,
-        ROUND(CAST(MIN(mn) AS numeric), 2) AS min_t_ha,
-        ROUND(CAST(MAX(mx) AS numeric), 2) AS max_t_ha,
-        COALESCE(SUM(c), 0) AS pixels_validos
-      FROM tile_stats, sample, parcel_lat
-      GROUP BY sample.sx, parcel_lat.lat
-    `, [geojsonStr]);
-      } finally {
-        await carbClient.end();
-      }
-    } catch (e) {
-      console.warn('[CARBONO] failed:', e.message);
-    }
-    console.log('[CARBONO] result:', JSON.stringify(carbonoResult.rows[0] || {}));
-    if (carbonoResult.rows[0]) {
-      analyses['9.12_carbono'].total_toneladas = carbonoResult.rows[0].total_toneladas;
-      analyses['9.12_carbono'].media_t_ha = carbonoResult.rows[0].media_t_ha;
-      analyses['9.12_carbono'].min_t_ha = carbonoResult.rows[0].min_t_ha;
-      analyses['9.12_carbono'].max_t_ha = carbonoResult.rows[0].max_t_ha;
-      analyses['9.12_carbono'].pixels_validos = carbonoResult.rows[0].pixels_validos;
-    }
-
-    // 9.12b Aquíferos (poroso, fraturado, cárstico)
     analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', poroso: [], fraturado: [], carstico: [], data: [] };
-    try {
-      const aqRes = await safeQuery(`
+
+    // Função carbono (cliente separado por causa do statement_timeout 65s)
+    const runCarbonoQuery = async () => {
+      try {
+        const carbClient = new Client({
+          host: process.env.DB_HOST,
+          port: parseInt(process.env.DB_PORT || '5432'),
+          database: process.env.DB_NAME,
+          user: process.env.DB_USER,
+          password: process.env.DB_PASS,
+          ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+          statement_timeout: 65000,
+          family: 4
+        });
+        await carbClient.connect();
+        try {
+          const r = await carbClient.query(`
+            WITH parcel_geom AS (
+              SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
+            ),
+            parcel_lat AS (SELECT ST_Y(ST_Centroid(g)) AS lat FROM parcel_geom),
+            sample AS (SELECT ABS(ST_ScaleX(rast)) * ABS(ST_ScaleY(rast)) AS sx FROM carbono_solo.carbono_2024 LIMIT 1),
+            clipped AS (
+              SELECT ST_SetBandNoDataValue(ST_Clip(r.rast, pg.g, true), 0) AS rast
+              FROM carbono_solo.carbono_2024 r, parcel_geom pg
+              WHERE ST_Intersects(r.rast, pg.g)
+            ),
+            tile_stats AS (
+              SELECT
+                (ST_SummaryStats(rast, 1, true)).sum   AS s,
+                (ST_SummaryStats(rast, 1, true)).count AS c,
+                (ST_SummaryStats(rast, 1, true)).min   AS mn,
+                (ST_SummaryStats(rast, 1, true)).max   AS mx
+              FROM clipped
+            )
+            SELECT
+              ROUND(CAST(COALESCE(SUM(s), 0) * sample.sx * COS(RADIANS(parcel_lat.lat)) * 111320.0 * 111320.0 / 10000.0 AS numeric), 2) AS total_toneladas,
+              ROUND(CAST(COALESCE(SUM(s), 0) / NULLIF(SUM(c), 0) AS numeric), 2) AS media_t_ha,
+              ROUND(CAST(MIN(mn) AS numeric), 2) AS min_t_ha,
+              ROUND(CAST(MAX(mx) AS numeric), 2) AS max_t_ha,
+              COALESCE(SUM(c), 0) AS pixels_validos
+            FROM tile_stats, sample, parcel_lat
+            GROUP BY sample.sx, parcel_lat.lat
+          `, [geojsonStr]);
+          return r.rows[0] || null;
+        } finally {
+          await carbClient.end();
+        }
+      } catch (e) {
+        console.warn('[CARBONO] failed:', e.message);
+        return null;
+      }
+    };
+
+    console.time('[par] riosgeom+altitude+carbono+aquiferos');
+    const [riosGeomResult, altitudeResult, carbonoRow, aqRes] = await Promise.all([
+      // Q-riosGeom: geometrias com nomes via JOIN LATERAL
+      safeQuery(`
+        WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
+        SELECT
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology((ST_Dump(c.geom)).geom, 0.0005)) AS geom_json,
+          COALESCE(NULLIF(TRIM(rn."NORIOCOMP"::text), ''), '') AS nome,
+          COALESCE(c.nuordemcda, 0) AS ordem
+        FROM hidrografia.geoft_bho_2017_curso_dagua c, parcel
+        LEFT JOIN LATERAL (
+          SELECT "NORIOCOMP" FROM hidrografia.rio_nomes rn2
+          WHERE rn2.geom && c.geom
+            AND ST_DWithin(rn2.geom::geography, ST_Centroid(c.geom)::geography, 100)
+          LIMIT 1
+        ) rn ON true
+        WHERE c.geom && parcel.g AND ST_Intersects(c.geom, parcel.g)
+        ORDER BY COALESCE(c.nuordemcda, 0) DESC NULLS LAST
+        LIMIT 5000
+      `, [geojsonStr]).catch(e => { console.warn('[riosGeom]', e.message); return { rows: [] }; }),
+      // Q-altitude: stats de altitude na parcela
+      safeQuery(`
+        SELECT
+          MIN(v.val) as min_alt,
+          MAX(v.val) as max_alt,
+          ROUND(CAST(AVG(v.val) AS numeric), 1) as avg_alt
+        FROM altitude_br.altitude_raster r,
+             LATERAL ST_PixelAsPoints(ST_Clip(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) v
+        WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+          AND v.val IS NOT NULL
+      `, [geojsonStr]).catch(e => { console.warn('[altitude]', e.message); return { rows: [] }; }),
+      // Q-carbono: cliente separado com statement_timeout maior
+      runCarbonoQuery(),
+      // Q-aquíferos: 3 tipos numa só query (UNION)
+      safeQuery(`
         WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
         SELECT 'poroso' AS tipo, "SAQ_NM_NOM" AS nome, "SAQ_CD_COD" AS codigo, "SAQ_AR_KM2" AS area_km2
         FROM aquifero_br.aquiferos_poroso a, parc
@@ -1807,19 +1769,59 @@ app.post('/api/analises', async (req, res) => {
         SELECT 'carstico', "SAQ_NM_NOM", "SAQ_CD_COD", "SAQ_AR_KM2"
         FROM aquifero_br.aquiferos_carstico a, parc
         WHERE a.geom && parc.g AND ST_Intersects(a.geom, parc.g)
-      `, [geojsonStr]);
-      for (const row of (aqRes?.rows || [])) {
-        const item = { nome: row.nome || '', codigo: row.codigo || '', area_km2: row.area_km2 || null };
-        const tgt = analyses['9.13b_aquiferos'];
-        const flatItem = { tipo_aquifero: row.tipo, nome: item.nome, codigo: item.codigo, area_km2: item.area_km2 };
-        if (row.tipo === 'poroso') tgt.poroso.push(item);
-        else if (row.tipo === 'fraturado') tgt.fraturado.push(item);
-        else if (row.tipo === 'carstico') tgt.carstico.push(item);
-        if (!Array.isArray(tgt.data)) tgt.data = [];
-        tgt.data.push(flatItem);
-      }
-      console.log('[AQUIFEROS] poroso:', analyses['9.13b_aquiferos'].poroso.length, 'fraturado:', analyses['9.13b_aquiferos'].fraturado.length, 'carstico:', analyses['9.13b_aquiferos'].carstico.length);
-    } catch (e) { console.warn('[AQUIFEROS] failed:', e.message); }
+      `, [geojsonStr]).catch(e => { console.warn('[AQUIFEROS]', e.message); return { rows: [] }; }),
+    ]);
+    console.timeEnd('[par] riosgeom+altitude+carbono+aquiferos');
+
+    // Processa riosGeom
+    analyses['9.10_hidrografia'].rios_geom = riosGeomResult.rows || [];
+
+    // Processa altitude
+    if (altitudeResult.rows[0]) {
+      analyses['9.11_altitude'].min_m = altitudeResult.rows[0].min_alt;
+      analyses['9.11_altitude'].max_m = altitudeResult.rows[0].max_alt;
+      analyses['9.11_altitude'].media_m = altitudeResult.rows[0].avg_alt;
+    }
+    if (municipio.centroid) {
+      try {
+        const centroidAltResult = await safeQuery(`
+          SELECT ST_Value(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1), 4674)) as altitude
+          FROM altitude_br.altitude_raster r
+          WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1), 4674))
+          LIMIT 1
+        `, [municipio.centroid]);
+        if (centroidAltResult.rows[0]) {
+          analyses['9.11_altitude'].ponto_m = centroidAltResult.rows[0].altitude;
+        }
+      } catch (_e) {}
+    }
+    if (analyses['9.11_altitude'].min_m === null && analyses['9.11_altitude'].ponto_m !== null) {
+      analyses['9.11_altitude'].min_m = analyses['9.11_altitude'].ponto_m;
+      analyses['9.11_altitude'].max_m = analyses['9.11_altitude'].ponto_m;
+      analyses['9.11_altitude'].media_m = analyses['9.11_altitude'].ponto_m;
+    }
+
+    // Processa carbono
+    if (carbonoRow) {
+      analyses['9.12_carbono'].total_toneladas = carbonoRow.total_toneladas;
+      analyses['9.12_carbono'].media_t_ha = carbonoRow.media_t_ha;
+      analyses['9.12_carbono'].min_t_ha = carbonoRow.min_t_ha;
+      analyses['9.12_carbono'].max_t_ha = carbonoRow.max_t_ha;
+      analyses['9.12_carbono'].pixels_validos = carbonoRow.pixels_validos;
+    }
+
+    // Processa aquíferos
+    for (const row of (aqRes?.rows || [])) {
+      const item = { nome: row.nome || '', codigo: row.codigo || '', area_km2: row.area_km2 || null };
+      const tgt = analyses['9.13b_aquiferos'];
+      const flatItem = { tipo_aquifero: row.tipo, nome: item.nome, codigo: item.codigo, area_km2: item.area_km2 };
+      if (row.tipo === 'poroso') tgt.poroso.push(item);
+      else if (row.tipo === 'fraturado') tgt.fraturado.push(item);
+      else if (row.tipo === 'carstico') tgt.carstico.push(item);
+      if (!Array.isArray(tgt.data)) tgt.data = [];
+      tgt.data.push(flatItem);
+    }
+    console.log('[AQUIFEROS] poroso:', analyses['9.13b_aquiferos'].poroso.length, 'fraturado:', analyses['9.13b_aquiferos'].fraturado.length, 'carstico:', analyses['9.13b_aquiferos'].carstico.length);
 
     // 9.13 CAR (área, APP, reserva legal, vegetação nativa)
     analyses['9.13_car'] = {
