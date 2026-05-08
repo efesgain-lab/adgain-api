@@ -1299,7 +1299,7 @@ app.post('/api/analises', async (req, res) => {
       // Q-riosGeom: geometrias simplificadas
       safeQuery(`
         WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS p)
-        SELECT ST_AsGeoJSON(ST_SimplifyPreserveTopology(c.geom, 0.0005)) AS geom,
+        SELECT ST_AsGeoJSON(ST_SimplifyPreserveTopology(c.geom, 0.00005)) AS geom,
                COALESCE(c.nuordemcda, 0) AS ordem
         FROM hidrografia.geoft_bho_2017_curso_dagua c, parc
         WHERE c.geom && parc.p AND ST_Intersects(c.geom, parc.p)
@@ -1728,7 +1728,7 @@ app.post('/api/analises', async (req, res) => {
       safeQuery(`
         WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
         SELECT
-          ST_AsGeoJSON(ST_SimplifyPreserveTopology((ST_Dump(c.geom)).geom, 0.0005)) AS geom_json,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology((ST_Dump(c.geom)).geom, 0.00005)) AS geom_json,
           COALESCE(NULLIF(TRIM(rn."NORIOCOMP"::text), ''), '') AS nome,
           COALESCE(c.nuordemcda, 0) AS ordem
         FROM hidrografia.geoft_bho_2017_curso_dagua c, parcel
