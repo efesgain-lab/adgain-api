@@ -1097,7 +1097,7 @@ app.post('/api/analises', async (req, res) => {
           ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Union(ST_Intersection(
             CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
-          )), 0.001)) as geom_json
+          )), 0.0001)) as geom_json
         FROM geologia_litologia.litoestratigafia_br
         WHERE ST_Intersects(
           CASE WHEN ST_SRID(geom) = 0 THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
