@@ -26,6 +26,29 @@ const pool = new Pool({
 
 const SRID = 4674; // SIRGAS 2000
 
+// PERF: cache em memória LRU simples para /api/analises (TTL 1h, max 50 entries)
+const _crypto = require('crypto');
+const analiseCache = new Map();
+const ANALISE_CACHE_TTL_MS = 60 * 60 * 1000;
+const ANALISE_CACHE_MAX = 50;
+function _cacheKey(geojson) {
+  return _crypto.createHash('sha256').update(JSON.stringify(geojson || {})).digest('hex');
+}
+function _cacheGet(key) {
+  const v = analiseCache.get(key);
+  if (!v) return null;
+  if (Date.now() - v.t > ANALISE_CACHE_TTL_MS) { analiseCache.delete(key); return null; }
+  return v.data;
+}
+function _cacheSet(key, data) {
+  analiseCache.set(key, { t: Date.now(), data });
+  if (analiseCache.size > ANALISE_CACHE_MAX) {
+    let oldestKey = null, oldestT = Infinity;
+    for (const [k, v] of analiseCache) if (v.t < oldestT) { oldestT = v.t; oldestKey = k; }
+    if (oldestKey) analiseCache.delete(oldestKey);
+  }
+}
+
 
 // --- Startup: indices GIST para queries espaciais ---
 async function ensureGistIndexes() {
@@ -807,6 +830,14 @@ app.post('/api/analises', async (req, res) => {
       return res.status(400).json({ error: 'geojson required in body' });
     }
 
+    // PERF: cache hit (mesma parcela analisada recentemente)
+    const _ck = _cacheKey({ geojson, origem });
+    const _hit = _cacheGet(_ck);
+    if (_hit) {
+      console.log('[CACHE HIT /api/analises]', _ck.slice(0, 12));
+      return res.json(_hit);
+    }
+
     const feature = parseGeoJSONFeature(geojson);
     const geojsonStr = JSON.stringify(feature);
     const origemParcel = (origem || '').toLowerCase(); // 'sigef' | 'snci' | 'car'
@@ -1216,7 +1247,10 @@ app.post('/api/analises', async (req, res) => {
             superficie: f.properties.superficie || null,
             fase_ti: f.properties.fase_ti || null,
           }));
-          for(let _i=0;_i<_wfsRows.length;_i++){const _pg=await safeQuery(`SELECT ROUND(CAST(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb),${SRID})),ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID})))::geography)/NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID}))::geography),0)*100 AS numeric),2) as pct`,[JSON.stringify(_wfsData.features[_i].geometry),geojsonStr]);_wfsRows[_i].percentual_sobreposicao=_pg.rows[0]?.pct??null;} if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
+          // PERF: paraleliza queries de % de sobreposição (antes era loop serial)
+          const _pctQueries = _wfsRows.map((_row, _i) => safeQuery(`SELECT ROUND(CAST(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb),${SRID})),ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID})))::geography)/NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID}))::geography),0)*100 AS numeric),2) as pct`, [JSON.stringify(_wfsData.features[_i].geometry), geojsonStr]).catch(() => ({ rows: [{ pct: null }] })));
+          const _pctResults = await Promise.all(_pctQueries);
+          _wfsRows.forEach((_row, _i) => { _row.percentual_sobreposicao = _pctResults[_i].rows[0]?.pct ?? null; }); if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
         }
       } catch (_e) { console.warn('[TI WFS]', _e.message); }
     }
@@ -2221,7 +2255,9 @@ app.post('/api/analises', async (req, res) => {
       parcel_geojson: JSON.parse(geojsonStr),  // geometria da parcela analisada — usada para overlay nos mapas SVG
     };
 
-    res.json({ sucesso: true, gerado_em: new Date().toISOString(), resultados });
+    const _resp = { sucesso: true, gerado_em: new Date().toISOString(), resultados };
+    _cacheSet(_ck, _resp);
+    res.json(_resp);
   } catch (error) {
     console.error('Error in /api/analises:', error);
     res.status(500).json({ error: error.message });
