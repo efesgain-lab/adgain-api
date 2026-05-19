@@ -2656,6 +2656,40 @@ app.get('/api/cache-clear', (req, res) => {
   res.json({ cleared: before, size_after: analiseCache.size });
 });
 
+app.get('/api/car-idx-summary', async (req, res) => {
+  // Conta indices btree em cod_imovel agrupados por prefixo
+  try {
+    const r = await pool.query(`
+      SELECT
+        regexp_replace(tablename, '_[a-z]{2}$', '') AS prefixo,
+        COUNT(*) FILTER (WHERE indexname LIKE 'btree_car_%_cod_imovel') AS estados_com_btree_cod,
+        COUNT(*) FILTER (WHERE indexname LIKE 'gist_car_%') AS estados_com_gist
+      FROM pg_indexes
+      WHERE schemaname='car'
+      GROUP BY 1
+      ORDER BY 1
+    `);
+    // tambem lista uf que NÃO tem btree em cada prefixo
+    const tablesByPrefix = await pool.query(`
+      SELECT
+        regexp_replace(tablename, '_[a-z]{2}$', '') AS prefixo,
+        right(tablename, 2) AS uf,
+        EXISTS(SELECT 1 FROM pg_indexes pi2 WHERE pi2.schemaname='car' AND pi2.tablename = pi.tablename AND pi2.indexname LIKE 'btree_%_cod_imovel') AS tem_btree
+      FROM (SELECT DISTINCT tablename FROM pg_tables WHERE schemaname='car') pi
+      ORDER BY 1, 2
+    `);
+    const semBtree = tablesByPrefix.rows.filter(r => !r.tem_btree);
+    res.json({
+      por_prefixo: r.rows,
+      total_tabelas: tablesByPrefix.rows.length,
+      total_sem_btree: semBtree.length,
+      tabelas_sem_btree: semBtree.map(x => `${x.prefixo}_${x.uf}`),
+    });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
 app.get('/api/test-car-idx', async (req, res) => {
   const uf = (req.query.uf || 'mt').toLowerCase();
   const r = {};
