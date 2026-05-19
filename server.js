@@ -2605,6 +2605,55 @@ app.get('/api/car-table-sizes', async (req, res) => {
   } catch(e) { res.json({ error: e.message }); }
 });
 
+app.get('/api/test-car-promise', async (req, res) => {
+  // Replica EXATAMENTE o Promise.all do /api/analises com safeQuery
+  const cod = req.query.cod;
+  if (!cod) return res.json({ error: 'use ?cod=...' });
+  const uf = cod.substring(0, 2).toLowerCase();
+  const codImoveisCar = [cod];
+  const placeholders = codImoveisCar.map((_, i) => `$${i + 1}`).join(', ');
+  const carReservaTable = `car.reserva_legal_${uf}`;
+  const carVegNativaTable = `car.vegetacao_nativa_${uf}`;
+  const carAreaConsolidadaTable = `car.area_consolidada_${uf}`;
+  try {
+    const [reservaLegalResult, vegNativaResult, areaConsolidadaResult] = await Promise.all([
+      safeQuery(`
+        SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
+        FROM (
+          SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
+          FROM ${carReservaTable}
+          WHERE cod_imovel IN (${placeholders})
+        ) d
+      `, codImoveisCar),
+      safeQuery(`
+        SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
+        FROM (
+          SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
+          FROM ${carVegNativaTable}
+          WHERE cod_imovel IN (${placeholders})
+        ) d
+      `, codImoveisCar),
+      pool.query(`
+        SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
+        FROM (
+          SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
+          FROM ${carAreaConsolidadaTable}
+          WHERE cod_imovel IN (${placeholders})
+        ) d
+      `, codImoveisCar).catch(e => ({ rows: [], error: e.message })),
+    ]);
+    res.json({
+      cod,
+      tables: { carReservaTable, carVegNativaTable, carAreaConsolidadaTable },
+      reservaLegal: { rows: reservaLegalResult.rows, rowCount: reservaLegalResult.rowCount },
+      vegNativa: { rows: vegNativaResult.rows, rowCount: vegNativaResult.rowCount },
+      areaConsolidada: { rows: areaConsolidadaResult.rows, rowCount: areaConsolidadaResult.rowCount, error: areaConsolidadaResult.error },
+    });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
 app.get('/api/test-car-pipeline', async (req, res) => {
   // Simula a chamada /api/analises usando a geometria do CAR cod_imovel
   const cod = req.query.cod;
