@@ -2605,6 +2605,48 @@ app.get('/api/car-table-sizes', async (req, res) => {
   } catch(e) { res.json({ error: e.message }); }
 });
 
+app.get('/api/test-car-pipeline', async (req, res) => {
+  // Simula a chamada /api/analises usando a geometria do CAR cod_imovel
+  const cod = req.query.cod;
+  if (!cod) return res.json({ error: 'use ?cod=...' });
+  const uf = cod.substring(0, 2).toLowerCase();
+  try {
+    const g = await pool.query(`SELECT ST_AsGeoJSON(ST_Multi(ST_Union(geom)))::jsonb as geom FROM car.area_imovel_${uf} WHERE cod_imovel = $1`, [cod]);
+    if (!g.rows[0] || !g.rows[0].geom) return res.json({ error: 'cod not found in area_imovel' });
+    const feature = { type: 'Feature', properties: { cod_imovel: cod }, geometry: g.rows[0].geom };
+    // POST internamente para /api/analises
+    const http = require('http');
+    const body = JSON.stringify({ geojson: feature, origem: 'car' });
+    const port = process.env.PORT || 3001;
+    const opts = { hostname: '127.0.0.1', port, path: '/api/analises', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
+    const r = await new Promise((resolve, reject) => {
+      const req = http.request(opts, (resp) => {
+        let data = '';
+        resp.on('data', c => data += c);
+        resp.on('end', () => { try { resolve(JSON.parse(data)); } catch(e) { resolve({ raw: data.slice(0, 2000) }); } });
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+    const car = r?.resultados?.car;
+    res.json({
+      cod,
+      car_summary: {
+        imoveis_count: car?.imoveis?.length,
+        imoveis_cod: (car?.imoveis || []).map(i => i.cod_imovel),
+        area_app_ha: car?.area_app_ha,
+        area_reserva_legal_ha: car?.area_reserva_legal_ha,
+        area_vegetacao_nativa_ha: car?.area_vegetacao_nativa_ha,
+        area_consolidada_ha: car?.area_consolidada_ha,
+      },
+      raw_car: car,
+    });
+  } catch (e) {
+    res.json({ error: e.message, stack: e.stack });
+  }
+});
+
 app.get('/api/test-car-rl', async (req, res) => {
   const cod = req.query.cod;
   if (!cod) return res.json({ error: 'use ?cod=...' });
