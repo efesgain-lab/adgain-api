@@ -1816,33 +1816,18 @@ app.post('/api/analises', async (req, res) => {
         WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
           AND v.val IS NOT NULL
       `, [geojsonStr]).catch(e => { console.warn('[altitude]', e.message); return { rows: [] }; }),
-      // Q-altitude-grid: grade 35x35 de pontos de altitude dentro da parcela p/ mapa hipsométrico
+      // Q-altitude-grid: pixels do raster clipado à parcela (subamostrado no front)
+      // Mesmo padrão da query de min/max — clip + PixelAsCentroids — proven fast
       safeQuery(`
-        WITH parcel AS (
-          SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
-        ),
-        bbox AS (
-          SELECT g,
-                 ST_XMin(g) AS minx, ST_XMax(g) AS maxx,
-                 ST_YMin(g) AS miny, ST_YMax(g) AS maxy
-          FROM parcel
-        ),
-        grid AS (
-          SELECT b.g AS pg,
-                 b.minx + ((b.maxx - b.minx) * i / 35.0) AS lng,
-                 b.miny + ((b.maxy - b.miny) * j / 35.0) AS lat
-          FROM bbox b, generate_series(0, 35) i, generate_series(0, 35) j
-        ),
-        inside AS (
-          SELECT lng, lat, ST_SetSRID(ST_MakePoint(lng, lat), 4674) AS pt
-          FROM grid
-          WHERE ST_Contains(pg, ST_SetSRID(ST_MakePoint(lng, lat), 4674))
-        )
-        SELECT i.lng::float8 AS lng, i.lat::float8 AS lat,
-               ST_Value(r.rast, i.pt)::float8 AS m
-        FROM inside i
-        JOIN altitude_br.altitude_raster r ON ST_Intersects(r.rast, i.pt)
-        WHERE ST_Value(r.rast, i.pt) IS NOT NULL
+        SELECT
+          ST_X(pc.geom)::float8 AS lng,
+          ST_Y(pc.geom)::float8 AS lat,
+          pc.val::float8 AS m
+        FROM altitude_br.altitude_raster r,
+             LATERAL ST_PixelAsCentroids(ST_Clip(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)), 1) pc
+        WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+          AND pc.val IS NOT NULL
+        LIMIT 8000
       `, [geojsonStr]).catch(e => { console.warn('[altitude-grid]', e.message); return { rows: [] }; }),
       // Q-carbono: cliente separado com statement_timeout maior
       runCarbonoQuery(),
@@ -1873,12 +1858,18 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.11_altitude'].max_m = altitudeResult.rows[0].max_alt;
       analyses['9.11_altitude'].media_m = altitudeResult.rows[0].avg_alt;
     }
-    // Processa altitude grid (mapa hipsométrico)
+    // Processa altitude grid (mapa hipsométrico) - subamostra se vier muita coisa
     if (altitudeGridResult && altitudeGridResult.rows && altitudeGridResult.rows.length) {
-      analyses['9.11_altitude'].grid = altitudeGridResult.rows.map(r => ({
-        lng: parseFloat(r.lng), lat: parseFloat(r.lat), m: parseFloat(r.m)
-      }));
-      console.log('[altitude-grid] pontos:', analyses['9.11_altitude'].grid.length);
+      const raw = altitudeGridResult.rows;
+      const TARGET = 1200;
+      const stride = Math.max(1, Math.floor(raw.length / TARGET));
+      const sampled = [];
+      for (let i = 0; i < raw.length; i += stride) {
+        const r = raw[i];
+        sampled.push({ lng: parseFloat(r.lng), lat: parseFloat(r.lat), m: parseFloat(r.m) });
+      }
+      analyses['9.11_altitude'].grid = sampled;
+      console.log('[altitude-grid] pixels brutos:', raw.length, '→ amostrados:', sampled.length);
     }
     if (municipio.centroid) {
       try {
