@@ -2605,6 +2605,25 @@ app.get('/api/car-table-sizes', async (req, res) => {
   } catch(e) { res.json({ error: e.message }); }
 });
 
+app.get('/api/test-car-rl', async (req, res) => {
+  const cod = req.query.cod;
+  if (!cod) return res.json({ error: 'use ?cod=...' });
+  const uf = cod.substring(0, 2).toLowerCase();
+  const codes = cod.split(',').map(s => s.trim()).filter(Boolean);
+  const placeholders = codes.map((_, i) => `$${i + 1}`).join(', ');
+  const out = { codes, uf };
+  for (const tab of ['reserva_legal', 'vegetacao_nativa', 'area_consolidada']) {
+    try {
+      const sql = `SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha FROM (SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area FROM car.${tab}_${uf} WHERE cod_imovel IN (${placeholders})) d`;
+      const r = await pool.query(sql, codes);
+      out[tab] = { rows: r.rows, sql };
+    } catch (e) {
+      out[tab] = { error: e.message };
+    }
+  }
+  res.json(out);
+});
+
 app.get('/api/test-car', async (req, res) => {
   const cod = req.query.cod;
   if (!cod) return res.json({ error: 'use ?cod=MT-XXX-...' });
