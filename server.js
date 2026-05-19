@@ -1728,7 +1728,7 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
 
     // ── PARALELIZADO: riosGeomResult + altitude + carbono + aquíferos (4 blocos independentes) ──
-    analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null };
+    analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null, grid: [] };
     analyses['9.12_carbono'] = { nome: 'Carbono', total_toneladas: null };
     analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', poroso: [], fraturado: [], carstico: [], data: [] };
 
@@ -1786,7 +1786,7 @@ app.post('/api/analises', async (req, res) => {
     };
 
     console.time('[par] riosgeom+altitude+carbono+aquiferos');
-    const [riosGeomResult, altitudeResult, carbonoRow, aqRes] = await Promise.all([
+    const [riosGeomResult, altitudeResult, altitudeGridResult, carbonoRow, aqRes] = await Promise.all([
       // Q-riosGeom: geometrias com nomes via JOIN LATERAL
       safeQuery(`
         WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
@@ -1816,6 +1816,34 @@ app.post('/api/analises', async (req, res) => {
         WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
           AND v.val IS NOT NULL
       `, [geojsonStr]).catch(e => { console.warn('[altitude]', e.message); return { rows: [] }; }),
+      // Q-altitude-grid: grade 35x35 de pontos de altitude dentro da parcela p/ mapa hipsométrico
+      safeQuery(`
+        WITH parcel AS (
+          SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
+        ),
+        bbox AS (
+          SELECT g,
+                 ST_XMin(g) AS minx, ST_XMax(g) AS maxx,
+                 ST_YMin(g) AS miny, ST_YMax(g) AS maxy
+          FROM parcel
+        ),
+        grid AS (
+          SELECT b.g AS pg,
+                 b.minx + ((b.maxx - b.minx) * i / 35.0) AS lng,
+                 b.miny + ((b.maxy - b.miny) * j / 35.0) AS lat
+          FROM bbox b, generate_series(0, 35) i, generate_series(0, 35) j
+        ),
+        inside AS (
+          SELECT lng, lat, ST_SetSRID(ST_MakePoint(lng, lat), 4674) AS pt
+          FROM grid
+          WHERE ST_Contains(pg, ST_SetSRID(ST_MakePoint(lng, lat), 4674))
+        )
+        SELECT i.lng::float8 AS lng, i.lat::float8 AS lat,
+               ST_Value(r.rast, i.pt)::float8 AS m
+        FROM inside i
+        JOIN altitude_br.altitude_raster r ON ST_Intersects(r.rast, i.pt)
+        WHERE ST_Value(r.rast, i.pt) IS NOT NULL
+      `, [geojsonStr]).catch(e => { console.warn('[altitude-grid]', e.message); return { rows: [] }; }),
       // Q-carbono: cliente separado com statement_timeout maior
       runCarbonoQuery(),
       // Q-aquíferos: 3 tipos numa só query (UNION)
@@ -1844,6 +1872,13 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.11_altitude'].min_m = altitudeResult.rows[0].min_alt;
       analyses['9.11_altitude'].max_m = altitudeResult.rows[0].max_alt;
       analyses['9.11_altitude'].media_m = altitudeResult.rows[0].avg_alt;
+    }
+    // Processa altitude grid (mapa hipsométrico)
+    if (altitudeGridResult && altitudeGridResult.rows && altitudeGridResult.rows.length) {
+      analyses['9.11_altitude'].grid = altitudeGridResult.rows.map(r => ({
+        lng: parseFloat(r.lng), lat: parseFloat(r.lat), m: parseFloat(r.m)
+      }));
+      console.log('[altitude-grid] pontos:', analyses['9.11_altitude'].grid.length);
     }
     if (municipio.centroid) {
       try {
@@ -2256,6 +2291,7 @@ app.post('/api/analises', async (req, res) => {
         altitude_max:    analyses['9.11_altitude'].max_m,
         altitude_media:  analyses['9.11_altitude'].media_m,
         altitude_ponto:  analyses['9.11_altitude'].ponto_m,
+        altitude_grid:   analyses['9.11_altitude'].grid,
       },
       carbono: {
         estoque_total_toneladas: analyses['9.12_carbono'].total_toneladas,
