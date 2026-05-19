@@ -849,10 +849,15 @@ app.post('/api/analises', async (req, res) => {
 
     // PERF: cache hit (mesma parcela analisada recentemente)
     const _ck = _cacheKey({ geojson, origem });
-    const _hit = _cacheGet(_ck);
-    if (_hit) {
-      console.log('[CACHE HIT /api/analises]', _ck.slice(0, 12));
-      return res.json(_hit);
+    const _nocache = req.query.nocache === '1' || req.body?.nocache === true;
+    if (!_nocache) {
+      const _hit = _cacheGet(_ck);
+      if (_hit) {
+        console.log('[CACHE HIT /api/analises]', _ck.slice(0, 12));
+        return res.json(_hit);
+      }
+    } else {
+      console.log('[CACHE BYPASS] nocache=1');
     }
 
     const feature = parseGeoJSONFeature(geojson);
@@ -2643,6 +2648,12 @@ app.get('/api/create-car-cod-indexes', async (req, res) => {
     }
   }
   res.json({ created_count: created.length, skipped_count: skipped.length, errored, sample_created: created.slice(0, 5) });
+});
+
+app.get('/api/cache-clear', (req, res) => {
+  const before = analiseCache.size;
+  analiseCache.clear();
+  res.json({ cleared: before, size_after: analiseCache.size });
 });
 
 app.get('/api/test-car-idx', async (req, res) => {
