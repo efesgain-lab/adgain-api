@@ -71,6 +71,23 @@ async function ensureGistIndexes() {
       } catch (ie) { /* tabela pode nao existir ainda */ }
     }
     console.log('[startup] GIST indices OK:', gc.rows.length);
+
+    // BTREE indices em cod_imovel — necessários p/ queries WHERE cod_imovel = X
+    // sem isso, sequential scan em tabelas CAR (300k+ linhas) timeout
+    const carPrefixes = ['area_imovel', 'reserva_legal', 'vegetacao_nativa', 'area_consolidada', 'apps'];
+    const ufsAll = ['ac','al','am','ap','ba','ce','df','es','go','ma','mg','ms','mt','pa','pb','pe','pi','pr','rj','rn','ro','rr','rs','sc','se','sp','to'];
+    let btreeOk = 0;
+    for (const prefix of carPrefixes) {
+      for (const uf of ufsAll) {
+        const tbl = `car.${prefix}_${uf}`;
+        const idx = `btree_car_${prefix}_${uf}_cod_imovel`.substring(0, 63);
+        try {
+          await client.query(`CREATE INDEX IF NOT EXISTS ${idx} ON ${tbl} (cod_imovel)`);
+          btreeOk++;
+        } catch (ie) { /* tabela pode nao existir */ }
+      }
+    }
+    console.log('[startup] BTREE indices cod_imovel CAR OK:', btreeOk);
   } catch (err) {
     console.error('[startup] GIST err:', err.message);
   } finally { client.release(); }
@@ -2603,6 +2620,29 @@ app.get('/api/car-table-sizes', async (req, res) => {
     }, 0);
     res.json({ tabelas: r.rows, total_tabelas: r.rows.length });
   } catch(e) { res.json({ error: e.message }); }
+});
+
+app.get('/api/create-car-cod-indexes', async (req, res) => {
+  // Endpoint p/ criar btree em cod_imovel sem reiniciar server
+  const carPrefixes = ['area_imovel', 'reserva_legal', 'vegetacao_nativa', 'area_consolidada', 'apps'];
+  const ufsAll = ['ac','al','am','ap','ba','ce','df','es','go','ma','mg','ms','mt','pa','pb','pe','pi','pr','rj','rn','ro','rr','rs','sc','se','sp','to'];
+  const created = [];
+  const skipped = [];
+  const errored = [];
+  for (const prefix of carPrefixes) {
+    for (const uf of ufsAll) {
+      const tbl = `car.${prefix}_${uf}`;
+      const idx = `btree_car_${prefix}_${uf}_cod_imovel`.substring(0, 63);
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS ${idx} ON ${tbl} (cod_imovel)`);
+        created.push(idx);
+      } catch (e) {
+        if (/does not exist/i.test(e.message)) skipped.push(tbl);
+        else errored.push({ tbl, error: e.message });
+      }
+    }
+  }
+  res.json({ created_count: created.length, skipped_count: skipped.length, errored, sample_created: created.slice(0, 5) });
 });
 
 app.get('/api/test-car-idx', async (req, res) => {
