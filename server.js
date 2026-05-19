@@ -2305,8 +2305,11 @@ app.get('/api/camadas/:camada', async (req, res) => {
 
     // Zoom-based tuning — keeps original ST_Intersects/bboxWkt intact (safe for SRID=0 tables)
     const simplifyTol   = zoom >= 14 ? 0.00005 : zoom >= 12 ? 0.0003 : zoom >= 10 ? 0.001 : zoom >= 8 ? 0.004 : 0.01;
-    const limitPerState = zoom >= 12 ? 150 : zoom >= 10 ? 80 : zoom >= 8 ? 40 : 20;
-    const limitTotal    = zoom >= 12 ? 400 : zoom >= 10 ? 200 : zoom >= 8 ? 100 : 60;
+    // CAR tem mais parcelas que SIGEF/SNCI numa mesma área → carrega 1.6x a mais
+    const isCAR = camada === 'car';
+    const ratioCAR = isCAR ? 1.6 : 1;
+    const limitPerState = Math.round((zoom >= 12 ? 150 : zoom >= 10 ? 80 : zoom >= 8 ? 40 : 20) * ratioCAR);
+    const limitTotal    = Math.round((zoom >= 12 ? 400 : zoom >= 10 ? 200 : zoom >= 8 ? 100 : 60) * ratioCAR);
 
     // State-partitioned layers: query ALL states that intersect the bbox (UNION ALL)
     const stateLayerConfig = {
