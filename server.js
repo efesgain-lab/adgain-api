@@ -2792,6 +2792,51 @@ app.get('/api/test-car-promise', async (req, res) => {
   }
 });
 
+app.get('/api/test-altitude-grid', async (req, res) => {
+  const cod = req.query.cod;
+  if (!cod) return res.json({ error: 'use ?cod=...' });
+  const uf = cod.substring(0, 2).toLowerCase();
+  try {
+    const g = await pool.query(`SELECT ST_AsGeoJSON(ST_Multi(ST_Union(geom)))::jsonb as geom FROM car.area_imovel_${uf} WHERE cod_imovel = $1`, [cod]);
+    if (!g.rows[0]?.geom) return res.json({ error: 'cod not found' });
+    const feature = { type: 'Feature', geometry: g.rows[0].geom };
+    const geojsonStr = JSON.stringify(feature);
+    const t0 = Date.now();
+    try {
+      const r = await pool.query(`
+        WITH parcel AS (
+          SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g
+        ),
+        bbox AS (
+          SELECT g, ST_XMin(g) AS minx, ST_XMax(g) AS maxx, ST_YMin(g) AS miny, ST_YMax(g) AS maxy FROM parcel
+        ),
+        grid AS (
+          SELECT b.g AS pg,
+                 b.minx + ((b.maxx - b.minx) * i / 35.0) AS lng,
+                 b.miny + ((b.maxy - b.miny) * j / 35.0) AS lat
+          FROM bbox b, generate_series(0, 35) i, generate_series(0, 35) j
+        ),
+        inside AS (
+          SELECT lng, lat, ST_SetSRID(ST_MakePoint(lng, lat), 4674) AS pt
+          FROM grid
+          WHERE ST_Contains(pg, ST_SetSRID(ST_MakePoint(lng, lat), 4674))
+        )
+        SELECT i.lng::float8 AS lng, i.lat::float8 AS lat,
+               ST_Value(r.rast, i.pt)::float8 AS m
+        FROM inside i
+        JOIN altitude_br.altitude_raster r ON ST_Intersects(r.rast, i.pt)
+        WHERE ST_Value(r.rast, i.pt) IS NOT NULL
+        LIMIT 2000
+      `, [geojsonStr]);
+      res.json({ cod, ms: Date.now() - t0, count: r.rows.length, sample: r.rows.slice(0, 3) });
+    } catch (e) {
+      res.json({ cod, ms: Date.now() - t0, error: e.message });
+    }
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
 app.get('/api/test-car-pipeline', async (req, res) => {
   // Simula a chamada /api/analises usando a geometria do CAR cod_imovel
   const cod = req.query.cod;
