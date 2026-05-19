@@ -2817,6 +2817,7 @@ app.get('/api/test-car-pipeline', async (req, res) => {
       req.end();
     });
     const car = r?.resultados?.car;
+    const alt = r?.resultados?.altitude;
     res.json({
       cod,
       car_summary: {
@@ -2827,7 +2828,11 @@ app.get('/api/test-car-pipeline', async (req, res) => {
         area_vegetacao_nativa_ha: car?.area_vegetacao_nativa_ha,
         area_consolidada_ha: car?.area_consolidada_ha,
       },
-      raw_car: car,
+      altitude_summary: {
+        min: alt?.altitude_min, max: alt?.altitude_max, media: alt?.altitude_media,
+        grid_pontos: (alt?.altitude_grid || []).length,
+        grid_amostra: (alt?.altitude_grid || []).slice(0, 3),
+      },
     });
   } catch (e) {
     res.json({ error: e.message, stack: e.stack });
