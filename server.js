@@ -903,27 +903,34 @@ app.post('/api/analises', async (req, res) => {
 
     // CTE reutilizável: gera 4 pontos geodistribuídos (grade 2×2 da bbox) dentro da parcela.
     // Usa ST_PointOnSurface como fallback para quadrantes fora do polígono (formas irregulares).
+    // Gera pontos de amostra DENTRO de CADA parcela do MultiPolygon
+    // (ST_Dump separa MultiPolygon em polígonos individuais).
+    // Para cada parcela: 1 ponto on-surface + 4 cantos do bbox interno.
+    // Assim, ao selecionar várias parcelas SIGEF, cada uma fornece seus próprios
+    // pontos de amostra, garantindo que CARs sobre qualquer uma sejam identificados.
     const samplePtsCTE = `
       WITH parcel_geom AS (
         SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AS g
       ),
+      parcel_parts AS (
+        SELECT (ST_Dump(g)).geom AS p FROM parcel_geom
+      ),
       sample_pts AS (
-        SELECT DISTINCT unnest(ARRAY[
-          ST_PointOnSurface(g),
-          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID}))
-               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID})
-               ELSE ST_PointOnSurface(g) END,
-          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID}))
-               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.25),${SRID})
-               ELSE ST_PointOnSurface(g) END,
-          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID}))
-               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.25, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID})
-               ELSE ST_PointOnSurface(g) END,
-          CASE WHEN ST_Contains(g, ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID}))
-               THEN ST_SetSRID(ST_MakePoint(ST_XMin(g)+(ST_XMax(g)-ST_XMin(g))*0.75, ST_YMin(g)+(ST_YMax(g)-ST_YMin(g))*0.75),${SRID})
-               ELSE ST_PointOnSurface(g) END
-        ]) AS pt
-        FROM parcel_geom
+        SELECT DISTINCT pt FROM (
+          -- 1 ponto on-surface por parcela
+          SELECT ST_PointOnSurface(p) AS pt FROM parcel_parts
+          UNION ALL
+          -- 4 cantos do bbox de cada parcela (com fallback para on-surface se cair fora)
+          SELECT CASE WHEN ST_Contains(pp.p, candidate) THEN candidate ELSE ST_PointOnSurface(pp.p) END AS pt
+          FROM parcel_parts pp
+          CROSS JOIN LATERAL (
+            SELECT ST_SetSRID(ST_MakePoint(
+              ST_XMin(pp.p) + (ST_XMax(pp.p) - ST_XMin(pp.p)) * pct_x,
+              ST_YMin(pp.p) + (ST_YMax(pp.p) - ST_YMin(pp.p)) * pct_y
+            ), ${SRID}) AS candidate
+            FROM (VALUES (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)) AS f(pct_x, pct_y)
+          ) sub
+        ) all_pts
       )
     `;
 
