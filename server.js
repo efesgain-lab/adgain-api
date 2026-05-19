@@ -2605,6 +2605,23 @@ app.get('/api/car-table-sizes', async (req, res) => {
   } catch(e) { res.json({ error: e.message }); }
 });
 
+app.get('/api/test-car-idx', async (req, res) => {
+  const uf = (req.query.uf || 'mt').toLowerCase();
+  const r = {};
+  for (const tbl of [`reserva_legal_${uf}`, `vegetacao_nativa_${uf}`, `area_consolidada_${uf}`]) {
+    try {
+      const idx = await pool.query(`
+        SELECT indexname, indexdef
+        FROM pg_indexes
+        WHERE schemaname='car' AND tablename=$1
+        ORDER BY indexname
+      `, [tbl]);
+      r[tbl] = idx.rows;
+    } catch(e) { r[tbl] = { error: e.message }; }
+  }
+  res.json(r);
+});
+
 app.get('/api/test-car-promise', async (req, res) => {
   // Replica EXATAMENTE o Promise.all do /api/analises com safeQuery
   const cod = req.query.cod;
