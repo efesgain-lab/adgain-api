@@ -2605,6 +2605,56 @@ app.get('/api/car-table-sizes', async (req, res) => {
   } catch(e) { res.json({ error: e.message }); }
 });
 
+app.get('/api/test-car', async (req, res) => {
+  const cod = req.query.cod;
+  if (!cod) return res.json({ error: 'use ?cod=MT-XXX-...' });
+  const uf = cod.substring(0, 2).toLowerCase();
+  const tables = {
+    area_imovel:       `car.area_imovel_${uf}`,
+    apps:              `car.apps_${uf}`,
+    reserva_legal:     `car.reserva_legal_${uf}`,
+    vegetacao_nativa:  `car.vegetacao_nativa_${uf}`,
+    area_consolidada:  `car.area_consolidada_${uf}`,
+  };
+  const out = { cod, uf, tabelas: {} };
+  for (const [key, table] of Object.entries(tables)) {
+    try {
+      // schema
+      const cols = await pool.query(`
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema='car' AND table_name=$1
+        ORDER BY ordinal_position
+      `, [table.split('.')[1]]);
+
+      // count total in table
+      const cnt = await pool.query(`SELECT COUNT(*)::bigint as total FROM ${table}`);
+      // count for cod_imovel
+      const found = await pool.query(`SELECT COUNT(*)::bigint as total FROM ${table} WHERE cod_imovel = $1`, [cod]);
+      // sample row
+      const sample = await pool.query(`SELECT * FROM ${table} WHERE cod_imovel = $1 LIMIT 3`, [cod]);
+      const samp = sample.rows.map(r => {
+        const o = {};
+        for (const [k, v] of Object.entries(r)) {
+          if (k === 'geom') o[k] = '<geometry>';
+          else o[k] = v;
+        }
+        return o;
+      });
+      out.tabelas[key] = {
+        table,
+        colunas: cols.rows.map(c => `${c.column_name}:${c.data_type}`),
+        total_rows: cnt.rows[0].total,
+        rows_para_cod: found.rows[0].total,
+        amostra: samp,
+      };
+    } catch (e) {
+      out.tabelas[key] = { table, error: e.message };
+    }
+  }
+  res.json(out);
+});
+
 app.get('/api/test-reserva', async (req, res) => {
   const cod = req.query.cod || 'AP-1600105-B80400C38AC04BB3AA90346BF37DFAEC';
   const uf = cod.substring(0, 2).toLowerCase();
