@@ -2121,6 +2121,7 @@ app.post('/api/analises', async (req, res) => {
       prodes_area_total_ha: 0,
       deter_area_total_ha: 0,
       fonte: 'INPE TerraBrasilis (WFS)',
+      debug: { wfs_counts: {}, errors: [], ms: 0 },
     };
     try {
       // Bbox da parcela em EPSG:4326
@@ -2143,9 +2144,25 @@ app.post('/api/analises', async (req, res) => {
           fetchWFS('deter-amz:deter_amz', bbox, 7000),
           fetchWFS('deter-cerrado-nb:deter_cerrado', bbox, 7000),
         ]);
-        console.log('[prodes-deter] WFS ms:', Date.now() - t0,
-          'prodes counts:', [prodesAmz, prodesCer, prodesMA, prodesCa, prodesPampa, prodesPant].map(r => (r.features||[]).length).join('/'),
-          'deter:', [deterAmz, deterCer].map(r => (r.features||[]).length).join('/'));
+        const elapsed = Date.now() - t0;
+        const wfsCounts = {
+          prodes_amazon: (prodesAmz.features || []).length,
+          prodes_cerrado: (prodesCer.features || []).length,
+          prodes_mata_atlantica: (prodesMA.features || []).length,
+          prodes_caatinga: (prodesCa.features || []).length,
+          prodes_pampa: (prodesPampa.features || []).length,
+          prodes_pantanal: (prodesPant.features || []).length,
+          deter_amz: (deterAmz.features || []).length,
+          deter_cerrado: (deterCer.features || []).length,
+        };
+        const wfsErrors = {};
+        for (const [k, v] of [
+          ['prodes_amazon', prodesAmz], ['prodes_cerrado', prodesCer], ['prodes_mata_atlantica', prodesMA],
+          ['prodes_caatinga', prodesCa], ['prodes_pampa', prodesPampa], ['prodes_pantanal', prodesPant],
+          ['deter_amz', deterAmz], ['deter_cerrado', deterCer]
+        ]) { if (v.error) wfsErrors[k] = v.error; }
+        analyses['9.13c_prodes_deter'].debug = { wfs_counts: wfsCounts, errors: wfsErrors, ms: elapsed };
+        console.log('[prodes-deter] WFS ms:', elapsed, 'counts:', JSON.stringify(wfsCounts), 'errors:', JSON.stringify(wfsErrors));
 
         // Junta todos features PRODES + faz intersect real
         const allProdesFeatures = []
@@ -2430,6 +2447,7 @@ app.post('/api/analises', async (req, res) => {
         prodes_area_total_ha:     analyses['9.13c_prodes_deter']?.prodes_area_total_ha || 0,
         deter_area_total_ha:      analyses['9.13c_prodes_deter']?.deter_area_total_ha || 0,
         fonte:                    analyses['9.13c_prodes_deter']?.fonte || 'INPE TerraBrasilis',
+        debug:                    analyses['9.13c_prodes_deter']?.debug || {},
       },
       aquiferos: analyses['9.13b_aquiferos'].data,
       analises_adicionais: analyses['9.14_analises_adicionais'],
