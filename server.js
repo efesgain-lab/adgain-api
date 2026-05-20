@@ -2184,6 +2184,103 @@ app.post('/api/analises', async (req, res) => {
       console.warn('[prodes-deter] erro:', e.message);
     }
 
+    // 9.13d ANÁLISE DE CONFORMIDADE AMBIENTAL (Código Florestal + CAR × PRODES × DETER)
+    {
+      const ufAmazoniaLegal = new Set(['AC','AP','AM','MA','MT','PA','RO','RR','TO']);
+      const uf = (municipio.uf || '').toUpperCase();
+      const wfsCounts = analyses['9.13c_prodes_deter']?.debug?.wfs_counts || {};
+      // Detecta bioma dominante: se PRODES Amazon retornou features → Amazônia, senão Cerrado/Pantanal/etc
+      let bioma = 'OUTROS', rlMinPct = 0.20;
+      if ((wfsCounts.prodes_amazon || 0) > 0) { bioma = 'AMAZÔNIA'; rlMinPct = ufAmazoniaLegal.has(uf) ? 0.80 : 0.20; }
+      else if ((wfsCounts.prodes_cerrado || 0) > 0) { bioma = 'CERRADO'; rlMinPct = ufAmazoniaLegal.has(uf) ? 0.35 : 0.20; }
+      else if ((wfsCounts.prodes_pantanal || 0) > 0) { bioma = 'PANTANAL'; rlMinPct = 0.20; }
+      else if ((wfsCounts.prodes_mata_atlantica || 0) > 0) { bioma = 'MATA ATLÂNTICA'; rlMinPct = 0.20; }
+      else if ((wfsCounts.prodes_caatinga || 0) > 0) { bioma = 'CAATINGA'; rlMinPct = 0.20; }
+      else if ((wfsCounts.prodes_pampa || 0) > 0) { bioma = 'PAMPA'; rlMinPct = 0.20; }
+
+      const areaTotal = parseFloat(municipio.area_hectares) || 0;
+      const carImoveis = analyses['9.13_car']?.area_imovel || [];
+      const carNumAreaHa = carImoveis.reduce((s, c) => s + (parseFloat(c.num_area) || 0), 0);
+      const areaRef = Math.max(areaTotal, carNumAreaHa); // usa o maior dos dois
+      const rlDeclarada = analyses['9.13_car']?.reserva_legal_hectares || 0;
+      const vegNativa = analyses['9.13_car']?.vegetacao_nativa_hectares || 0;
+      const areaConsolidada = analyses['9.13_car']?.area_consolidada_hectares || 0;
+      const prodesTotal = analyses['9.13c_prodes_deter']?.prodes_area_total_ha || 0;
+      const deterTotal = analyses['9.13c_prodes_deter']?.deter_area_total_ha || 0;
+      // DETER recente: alertas dos últimos 24 meses
+      const cutoff24m = new Date(); cutoff24m.setMonth(cutoff24m.getMonth() - 24);
+      const deterRecente = (analyses['9.13c_prodes_deter']?.deter || [])
+        .filter(d => d.view_date && new Date(d.view_date) >= cutoff24m);
+      const deterRecenteHa = deterRecente.reduce((s, d) => s + (d.area_ha || 0), 0);
+
+      const rlMinHa = areaRef * rlMinPct;
+      const rlAtende = rlDeclarada >= rlMinHa;
+      // Discrepância: se PRODES > Área Consolidada declarada, o CAR declarou MENOS área desmatada que o real
+      const discrepanciaConsolidada = prodesTotal > 0 && areaConsolidada > 0 && prodesTotal > areaConsolidada * 1.1;
+      // Discrepância: Veg Nativa CAR + Área Consolidada CAR ≠ Área Total (com 5% tolerância)
+      const somaCAR = vegNativa + areaConsolidada;
+      const desbalanco = areaRef > 0 ? Math.abs(somaCAR - areaRef) / areaRef : 0;
+      // CAR status crítico
+      const statusCritico = carImoveis.some(c => ['CA', 'SU'].includes((c.ind_status || '').toUpperCase()));
+      const statusAtivo = carImoveis.every(c => (c.ind_status || '').toUpperCase() === 'AT');
+
+      const flags = [];
+      // RED FLAGS
+      if (deterRecenteHa > 0) {
+        flags.push({ nivel: 'red', titulo: `DETER recente: ${deterRecenteHa.toFixed(2)} ha em ${deterRecente.length} alerta(s) nos últimos 24 meses`, descricao: 'Desmatamento ativo detectado. Pode estar gerando embargo automático IBAMA (Decreto 11.687/2023) e bloqueio de crédito rural (Res. BACEN 4.943/2021).' });
+      }
+      if (carImoveis.length > 0 && !rlAtende && rlMinHa > 0) {
+        const deficit = rlMinHa - rlDeclarada;
+        flags.push({ nivel: 'red', titulo: `Reserva Legal declarada (${rlDeclarada.toFixed(2)} ha) é inferior ao mínimo legal (${rlMinHa.toFixed(2)} ha)`, descricao: `Bioma ${bioma}${ufAmazoniaLegal.has(uf) ? ' (Amazônia Legal)' : ''} exige ${(rlMinPct * 100).toFixed(0)}% de RL. Déficit: ${deficit.toFixed(2)} ha. Recompor via PRA — custo estimado R$ ${(deficit * 12000).toLocaleString('pt-BR', {maximumFractionDigits: 0})} (R$ ~12k/ha plantio nativa).` });
+      }
+      if (discrepanciaConsolidada) {
+        flags.push({ nivel: 'red', titulo: 'Discrepância CAR × PRODES detectada', descricao: `PRODES indica ${prodesTotal.toFixed(2)} ha desmatado historicamente, mas CAR declara apenas ${areaConsolidada.toFixed(2)} ha como área consolidada. Possível omissão na declaração CAR — alto risco fiscalização.` });
+      }
+      if (statusCritico) {
+        flags.push({ nivel: 'red', titulo: 'CAR com status crítico (Cancelado ou Suspenso)', descricao: 'Propriedade não tem CAR ativo. Bloqueia certificação, crédito rural e exportação (Moratória da Soja/Acordo da Carne).' });
+      }
+      // YELLOW FLAGS
+      if (prodesTotal > 0 && areaRef > 0 && prodesTotal / areaRef > 0.1) {
+        flags.push({ nivel: 'yellow', titulo: `Passivo PRODES significativo (${(prodesTotal / areaRef * 100).toFixed(1)}% da propriedade)`, descricao: `${prodesTotal.toFixed(2)} ha de desmatamento histórico oficial. Se sobrepor RL/APP, é infração consumada (Lei 9.605/98).` });
+      }
+      if (desbalanco > 0.05 && carImoveis.length > 0 && areaRef > 0) {
+        flags.push({ nivel: 'yellow', titulo: 'Veg. Nativa + Área Consolidada CAR não fecha com área total', descricao: `Soma declarada: ${somaCAR.toFixed(2)} ha, área da propriedade: ${areaRef.toFixed(2)} ha (${(desbalanco * 100).toFixed(1)}% de diferença). Pode haver APP/servidão não declarada ou inconsistência.` });
+      }
+      if (carImoveis.some(c => (c.ind_status || '').toUpperCase() === 'PE' || (c.des_condic || '').toLowerCase().includes('aguardando'))) {
+        flags.push({ nivel: 'yellow', titulo: 'CAR aguardando análise', descricao: 'Auto-declaração ainda não validada pelo órgão estadual. Pode haver pendências bloqueando atos administrativos.' });
+      }
+      // GREEN FLAGS
+      if (prodesTotal === 0 && deterTotal === 0) {
+        flags.push({ nivel: 'green', titulo: '✓ Nenhum desmatamento PRODES/DETER detectado', descricao: 'Propriedade sem passivo de desmatamento oficial pelo INPE. Apta a Moratória da Soja e Acordo da Carne.' });
+      }
+      if (carImoveis.length > 0 && rlAtende && rlMinHa > 0) {
+        flags.push({ nivel: 'green', titulo: `✓ Reserva Legal atende mínimo legal (${(rlMinPct * 100).toFixed(0)}%)`, descricao: `RL declarada (${rlDeclarada.toFixed(2)} ha) >= mínimo do bioma ${bioma} (${rlMinHa.toFixed(2)} ha).` });
+      }
+      if (carImoveis.length > 0 && statusAtivo) {
+        flags.push({ nivel: 'green', titulo: '✓ CAR Ativo', descricao: 'Cadastro Ambiental Rural em situação ativa.' });
+      }
+
+      analyses['9.13d_conformidade'] = {
+        nome: 'Conformidade Ambiental',
+        bioma,
+        bioma_uf: uf,
+        amazonia_legal: ufAmazoniaLegal.has(uf),
+        rl_minima_pct: rlMinPct,
+        rl_minima_ha: parseFloat(rlMinHa.toFixed(2)),
+        rl_declarada_ha: parseFloat(rlDeclarada.toFixed(2)),
+        rl_atende_minimo: rlAtende,
+        veg_nativa_declarada_ha: parseFloat(vegNativa.toFixed(2)),
+        area_consolidada_declarada_ha: parseFloat(areaConsolidada.toFixed(2)),
+        prodes_total_ha: parseFloat(prodesTotal.toFixed(2)),
+        deter_total_ha: parseFloat(deterTotal.toFixed(2)),
+        deter_recente_ha: parseFloat(deterRecenteHa.toFixed(2)),
+        deter_recente_count: deterRecente.length,
+        discrepancia_consolidada: discrepanciaConsolidada,
+        desbalanco_pct: parseFloat((desbalanco * 100).toFixed(1)),
+        flags,
+      };
+    }
+
     // 9.14 Análises Adicionais (Geologia Estrutural + Ocorrências + Tectônica)
     analyses['9.14_analises_adicionais'] = {
       nome: 'Análises Adicionais',
@@ -2449,6 +2546,7 @@ app.post('/api/analises', async (req, res) => {
         fonte:                    analyses['9.13c_prodes_deter']?.fonte || 'INPE TerraBrasilis',
         debug:                    analyses['9.13c_prodes_deter']?.debug || {},
       },
+      conformidade: analyses['9.13d_conformidade'] || null,
       aquiferos: analyses['9.13b_aquiferos'].data,
       analises_adicionais: analyses['9.14_analises_adicionais'],
       pluviometria,
