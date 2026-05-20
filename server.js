@@ -1827,7 +1827,7 @@ app.post('/api/analises', async (req, res) => {
              LATERAL ST_PixelAsCentroids(ST_Clip(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)), 1) pc
         WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
           AND pc.val IS NOT NULL
-        LIMIT 8000
+        LIMIT 30000
       `, [geojsonStr]).catch(e => { console.warn('[altitude-grid]', e.message); return { rows: [] }; }),
       // Q-carbono: cliente separado com statement_timeout maior
       runCarbonoQuery(),
@@ -1861,7 +1861,7 @@ app.post('/api/analises', async (req, res) => {
     // Processa altitude grid (mapa hipsométrico) - subamostra se vier muita coisa
     if (altitudeGridResult && altitudeGridResult.rows && altitudeGridResult.rows.length) {
       const raw = altitudeGridResult.rows;
-      const TARGET = 1200;
+      const TARGET = 5000; // mais pixels = mapa mais detalhado
       const stride = Math.max(1, Math.floor(raw.length / TARGET));
       const sampled = [];
       for (let i = 0; i < raw.length; i += stride) {
