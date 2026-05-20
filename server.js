@@ -3103,6 +3103,8 @@ app.get('/api/test-car-pipeline', async (req, res) => {
     });
     const car = r?.resultados?.car;
     const alt = r?.resultados?.altitude;
+    const pd = r?.resultados?.prodes_deter;
+    const cf = r?.resultados?.conformidade;
     res.json({
       cod,
       car_summary: {
@@ -3116,8 +3118,18 @@ app.get('/api/test-car-pipeline', async (req, res) => {
       altitude_summary: {
         min: alt?.altitude_min, max: alt?.altitude_max, media: alt?.altitude_media,
         grid_pontos: (alt?.altitude_grid || []).length,
-        grid_amostra: (alt?.altitude_grid || []).slice(0, 3),
       },
+      prodes_deter: pd ? {
+        prodes_count: (pd.prodes || []).length,
+        prodes_area_total_ha: pd.prodes_area_total_ha,
+        deter_count: (pd.deter || []).length,
+        deter_area_total_ha: pd.deter_area_total_ha,
+        debug: pd.debug,
+        first_prodes: (pd.prodes || [])[0],
+        first_deter: (pd.deter || [])[0],
+      } : null,
+      conformidade: cf || null,
+      response_keys: Object.keys(r?.resultados || {}),
     });
   } catch (e) {
     res.json({ error: e.message, stack: e.stack });
