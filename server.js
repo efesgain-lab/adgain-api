@@ -258,7 +258,14 @@ async function intersectFeaturesWithParcel(features, geojsonStr, propsToKeep) {
              ST_Intersects(f.geom, p.g) AS hits,
              CASE WHEN ST_Intersects(f.geom, p.g)
                THEN ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(f.geom, p.g), 32721))/10000 AS numeric), 4)
-               ELSE 0 END AS area_ha
+               ELSE 0 END AS area_ha,
+             -- Bbox da intersecção (parte da feature dentro da parcela) p/ buscar imagem do trecho relevante
+             ST_XMin(ST_Intersection(f.geom, p.g))::float8 AS minx,
+             ST_YMin(ST_Intersection(f.geom, p.g))::float8 AS miny,
+             ST_XMax(ST_Intersection(f.geom, p.g))::float8 AS maxx,
+             ST_YMax(ST_Intersection(f.geom, p.g))::float8 AS maxy,
+             ST_X(ST_Centroid(ST_Intersection(f.geom, p.g)))::float8 AS clng,
+             ST_Y(ST_Centroid(ST_Intersection(f.geom, p.g)))::float8 AS clat
       FROM feats f, parcel p
       ORDER BY f.idx
     `, [geojsonStr, geoms]);
@@ -268,7 +275,12 @@ async function intersectFeaturesWithParcel(features, geojsonStr, propsToKeep) {
       const item = itens[row.idx - 1];
       const filtered = {};
       for (const k of propsToKeep) if (item.props[k] !== undefined) filtered[k] = item.props[k];
-      out.push({ ...filtered, area_ha: parseFloat(row.area_ha) });
+      out.push({
+        ...filtered,
+        area_ha: parseFloat(row.area_ha),
+        bbox: [parseFloat(row.minx), parseFloat(row.miny), parseFloat(row.maxx), parseFloat(row.maxy)],
+        centroid: { lng: parseFloat(row.clng), lat: parseFloat(row.clat) },
+      });
     }
     return out;
   } catch (e) {
