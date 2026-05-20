@@ -218,6 +218,66 @@ function getUFsFromBbox(minLng, minLat, maxLng, maxLat) {
 }
 
 /**
+ * Fetch PRODES/DETER do WFS TerraBrasilis pra um polígono (com timeout curto + fallback gracioso)
+ */
+async function fetchWFS(typeName, bbox, timeoutMs = 8000) {
+  const url = `https://terrabrasilis.dpi.inpe.br/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=${encodeURIComponent(typeName)}&outputFormat=application/json&bbox=${bbox.join(',')},EPSG:4326&count=500`;
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(tid);
+    if (!r.ok) return { features: [], error: `HTTP ${r.status}` };
+    const j = await r.json();
+    return j;
+  } catch (e) {
+    clearTimeout(tid);
+    return { features: [], error: e.message || 'fetch err' };
+  }
+}
+
+/**
+ * Computa intersect de cada feature do WFS com o polígono da parcela via PostGIS
+ * Recebe features GeoJSON + geojsonStr da parcela
+ * Retorna lista filtrada com area_ha real da interseção
+ */
+async function intersectFeaturesWithParcel(features, geojsonStr, propsToKeep) {
+  if (!features || !features.length) return [];
+  // Mapeia cada feature p/ {props, geomJson}
+  const itens = features.map(f => ({ props: f.properties || {}, geom: f.geometry }));
+  // Faz UMA query batched: passa array de geoms via UNNEST
+  const geoms = itens.map(i => JSON.stringify(i.geom));
+  try {
+    const r = await pool.query(`
+      WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+      feats AS (
+        SELECT idx, ST_SetSRID(ST_GeomFromGeoJSON(geom_str), 4674) AS geom
+        FROM unnest($2::text[]) WITH ORDINALITY AS u(geom_str, idx)
+      )
+      SELECT f.idx::int AS idx,
+             ST_Intersects(f.geom, p.g) AS hits,
+             CASE WHEN ST_Intersects(f.geom, p.g)
+               THEN ROUND(CAST(ST_Area(ST_Transform(ST_Intersection(f.geom, p.g), 32721))/10000 AS numeric), 4)
+               ELSE 0 END AS area_ha
+      FROM feats f, parcel p
+      ORDER BY f.idx
+    `, [geojsonStr, geoms]);
+    const out = [];
+    for (const row of r.rows) {
+      if (!row.hits) continue;
+      const item = itens[row.idx - 1];
+      const filtered = {};
+      for (const k of propsToKeep) if (item.props[k] !== undefined) filtered[k] = item.props[k];
+      out.push({ ...filtered, area_ha: parseFloat(row.area_ha) });
+    }
+    return out;
+  } catch (e) {
+    console.warn('[intersect-features]', e.message);
+    return [];
+  }
+}
+
+/**
  * Safe query that returns empty array on error (for state-specific tables that may not exist)
  */
 async function safeQuery(sql, params) {
@@ -2041,6 +2101,60 @@ app.post('/api/analises', async (req, res) => {
 
     // (legacy aquiferos block removed - now at line ~1602)
 
+    // 9.13c PRODES + DETER (desmatamento INPE via WFS TerraBrasilis)
+    analyses['9.13c_prodes_deter'] = {
+      nome: 'Desmatamento (PRODES/DETER)',
+      prodes: [],
+      deter: [],
+      prodes_area_total_ha: 0,
+      deter_area_total_ha: 0,
+      fonte: 'INPE TerraBrasilis (WFS)',
+    };
+    try {
+      // Bbox da parcela em EPSG:4326
+      const bboxResult = await pool.query(`
+        SELECT ST_XMin(g) AS minx, ST_YMin(g) AS miny, ST_XMax(g) AS maxx, ST_YMax(g) AS maxy
+        FROM (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) g) x
+      `, [geojsonStr]);
+      const bb = bboxResult.rows[0];
+      if (bb) {
+        const bbox = [parseFloat(bb.minx), parseFloat(bb.miny), parseFloat(bb.maxx), parseFloat(bb.maxy)];
+        // Roda WFS pra todos biomas em paralelo (cada um com timeout próprio)
+        const t0 = Date.now();
+        const [prodesAmz, prodesCer, prodesMA, prodesCa, prodesPampa, prodesPant, deterAmz, deterCer] = await Promise.all([
+          fetchWFS('prodes-amazon-nb:yearly_deforestation_biome', bbox, 7000),
+          fetchWFS('prodes-cerrado-nb:yearly_deforestation', bbox, 7000),
+          fetchWFS('prodes-mata-atlantica-nb:yearly_deforestation', bbox, 7000),
+          fetchWFS('prodes-caatinga-nb:yearly_deforestation', bbox, 7000),
+          fetchWFS('prodes-pampa-nb:yearly_deforestation', bbox, 7000),
+          fetchWFS('prodes-pantanal-nb:yearly_deforestation', bbox, 7000),
+          fetchWFS('deter-amz:deter_amz', bbox, 7000),
+          fetchWFS('deter-cerrado-nb:deter_cerrado', bbox, 7000),
+        ]);
+        console.log('[prodes-deter] WFS ms:', Date.now() - t0,
+          'prodes counts:', [prodesAmz, prodesCer, prodesMA, prodesCa, prodesPampa, prodesPant].map(r => (r.features||[]).length).join('/'),
+          'deter:', [deterAmz, deterCer].map(r => (r.features||[]).length).join('/'));
+
+        // Junta todos features PRODES + faz intersect real
+        const allProdesFeatures = []
+          .concat(prodesAmz.features || [], prodesCer.features || [], prodesMA.features || [],
+                  prodesCa.features || [], prodesPampa.features || [], prodesPant.features || []);
+        const prodesProps = ['uid', 'year', 'class_name', 'main_class', 'state', 'image_date', 'satellite', 'sensor', 'area_km'];
+        const prodesItems = await intersectFeaturesWithParcel(allProdesFeatures, geojsonStr, prodesProps);
+
+        const allDeterFeatures = [].concat(deterAmz.features || [], deterCer.features || []);
+        const deterProps = ['uid', 'classname', 'view_date', 'sensor', 'satellite', 'areamunkm', 'areauckm', 'areatotalkm', 'municipalit', 'uf'];
+        const deterItems = await intersectFeaturesWithParcel(allDeterFeatures, geojsonStr, deterProps);
+
+        analyses['9.13c_prodes_deter'].prodes = prodesItems.sort((a, b) => (a.year || 0) - (b.year || 0));
+        analyses['9.13c_prodes_deter'].deter = deterItems.sort((a, b) => (a.view_date || '').localeCompare(b.view_date || ''));
+        analyses['9.13c_prodes_deter'].prodes_area_total_ha = prodesItems.reduce((s, x) => s + (x.area_ha || 0), 0);
+        analyses['9.13c_prodes_deter'].deter_area_total_ha = deterItems.reduce((s, x) => s + (x.area_ha || 0), 0);
+      }
+    } catch (e) {
+      console.warn('[prodes-deter] erro:', e.message);
+    }
+
     // 9.14 Análises Adicionais (Geologia Estrutural + Ocorrências + Tectônica)
     analyses['9.14_analises_adicionais'] = {
       nome: 'Análises Adicionais',
@@ -2297,6 +2411,13 @@ app.post('/api/analises', async (req, res) => {
         area_consolidada_ha:      analyses['9.13_car'].area_consolidada_hectares,
         reserva_proposta_ha:      0,
         veg_nativa_proposta_ha:   0,
+      },
+      prodes_deter: {
+        prodes:                   analyses['9.13c_prodes_deter']?.prodes || [],
+        deter:                    analyses['9.13c_prodes_deter']?.deter || [],
+        prodes_area_total_ha:     analyses['9.13c_prodes_deter']?.prodes_area_total_ha || 0,
+        deter_area_total_ha:      analyses['9.13c_prodes_deter']?.deter_area_total_ha || 0,
+        fonte:                    analyses['9.13c_prodes_deter']?.fonte || 'INPE TerraBrasilis',
       },
       aquiferos: analyses['9.13b_aquiferos'].data,
       analises_adicionais: analyses['9.14_analises_adicionais'],
