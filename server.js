@@ -2135,14 +2135,14 @@ app.post('/api/analises', async (req, res) => {
         // Roda WFS pra todos biomas em paralelo (cada um com timeout próprio)
         const t0 = Date.now();
         const [prodesAmz, prodesCer, prodesMA, prodesCa, prodesPampa, prodesPant, deterAmz, deterCer] = await Promise.all([
-          fetchWFS('prodes-amazon-nb:yearly_deforestation_biome', bbox, 7000),
-          fetchWFS('prodes-cerrado-nb:yearly_deforestation', bbox, 7000),
-          fetchWFS('prodes-mata-atlantica-nb:yearly_deforestation', bbox, 7000),
-          fetchWFS('prodes-caatinga-nb:yearly_deforestation', bbox, 7000),
-          fetchWFS('prodes-pampa-nb:yearly_deforestation', bbox, 7000),
-          fetchWFS('prodes-pantanal-nb:yearly_deforestation', bbox, 7000),
-          fetchWFS('deter-amz:deter_amz', bbox, 7000),
-          fetchWFS('deter-cerrado-nb:deter_cerrado', bbox, 7000),
+          fetchWFS('prodes-amazon-nb:yearly_deforestation_biome', bbox, 15000),
+          fetchWFS('prodes-cerrado-nb:yearly_deforestation', bbox, 15000),
+          fetchWFS('prodes-mata-atlantica-nb:yearly_deforestation', bbox, 15000),
+          fetchWFS('prodes-caatinga-nb:yearly_deforestation', bbox, 15000),
+          fetchWFS('prodes-pampa-nb:yearly_deforestation', bbox, 15000),
+          fetchWFS('prodes-pantanal-nb:yearly_deforestation', bbox, 15000),
+          fetchWFS('deter-amz:deter_amz', bbox, 15000),
+          fetchWFS('deter-cerrado-nb:deter_cerrado', bbox, 15000),
         ]);
         const elapsed = Date.now() - t0;
         const wfsCounts = {
