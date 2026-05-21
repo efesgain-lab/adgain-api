@@ -3155,6 +3155,41 @@ app.get('/api/test-car-rl', async (req, res) => {
   res.json(out);
 });
 
+app.get('/api/car-geom', async (req, res) => {
+  // Retorna GeoJSON Feature do imóvel CAR para visualizar no mapa
+  const cod = (req.query.cod || '').toString();
+  if (!cod) return res.status(400).json({ error: 'use ?cod=MT-XXX-...' });
+  const uf = cod.substring(0, 2).toLowerCase();
+  const table = `car.area_imovel_${uf}`;
+  try {
+    const r = await pool.query(`
+      SELECT ST_AsGeoJSON(ST_Multi(ST_Union(
+        CASE WHEN ST_SRID(geom) != 4674 THEN ST_SetSRID(geom, 4674) ELSE geom END
+      )))::jsonb AS geom,
+      MAX(num_area) AS num_area,
+      MAX(ind_status) AS ind_status,
+      MAX(ind_tipo) AS ind_tipo,
+      MAX(des_condic) AS des_condic
+      FROM ${table} WHERE cod_imovel = $1
+    `, [cod]);
+    if (!r.rows[0] || !r.rows[0].geom) return res.json({ error: 'not found' });
+    res.json({
+      type: 'Feature',
+      geometry: r.rows[0].geom,
+      properties: {
+        cod_imovel: cod,
+        num_area: r.rows[0].num_area,
+        ind_status: r.rows[0].ind_status,
+        ind_tipo: r.rows[0].ind_tipo,
+        des_condic: r.rows[0].des_condic,
+      },
+    });
+  } catch (e) {
+    console.warn('[car-geom]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/test-car', async (req, res) => {
   const cod = req.query.cod;
   if (!cod) return res.json({ error: 'use ?cod=MT-XXX-...' });
