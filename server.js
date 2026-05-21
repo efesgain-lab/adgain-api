@@ -2113,6 +2113,54 @@ app.post('/api/analises', async (req, res) => {
 
     // (legacy aquiferos block removed - now at line ~1602)
 
+    // 9.13b' SILOS / ARMAZÉNS PRÓXIMOS (CONAB SICARM)
+    analyses['9.13e_silos'] = {
+      nome: 'Silos / Armazéns próximos',
+      raio_km: 50,
+      total_silos: 0,
+      capacidade_total_t: 0,
+      silos: [],
+      por_tipo: {},
+    };
+    try {
+      const silosRes = await pool.query(`
+        WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
+        centroid AS (SELECT ST_Centroid(g) AS c FROM parcel)
+        SELECT s.id, s.razao_social, s.municipio, s.uf, s.tipo,
+               s.capacidade_t, s.produtos, s.cnpj, s.situacao,
+               s.lat, s.lng,
+               ROUND(CAST(ST_Distance(s.geom::geography, c.c::geography) / 1000 AS numeric), 2) AS distancia_km
+        FROM silos.armazens_brasil s, centroid c
+        WHERE ST_DWithin(s.geom::geography, c.c::geography, 50000)
+        ORDER BY ST_Distance(s.geom::geography, c.c::geography)
+        LIMIT 200
+      `, [geojsonStr]);
+      const rows = silosRes.rows || [];
+      analyses['9.13e_silos'].silos = rows.map(r => ({
+        id: r.id, razao_social: r.razao_social, municipio: r.municipio, uf: r.uf,
+        tipo: r.tipo, capacidade_t: parseFloat(r.capacidade_t) || 0,
+        produtos: r.produtos, cnpj: r.cnpj, situacao: r.situacao,
+        lat: parseFloat(r.lat), lng: parseFloat(r.lng),
+        distancia_km: parseFloat(r.distancia_km),
+      }));
+      analyses['9.13e_silos'].total_silos = rows.length;
+      analyses['9.13e_silos'].capacidade_total_t = rows.reduce((s, x) => s + (parseFloat(x.capacidade_t) || 0), 0);
+      // Agrupa por tipo
+      const porTipo = {};
+      for (const r of rows) {
+        const k = r.tipo || 'Outro';
+        if (!porTipo[k]) porTipo[k] = { count: 0, cap_t: 0 };
+        porTipo[k].count++;
+        porTipo[k].cap_t += parseFloat(r.capacidade_t) || 0;
+      }
+      analyses['9.13e_silos'].por_tipo = porTipo;
+    } catch (e) {
+      // Tabela pode não existir ainda — silencia (precisa do import CONAB SICARM)
+      if (!/does not exist/i.test(e.message)) {
+        console.warn('[silos]', e.message);
+      }
+    }
+
     // 9.13c PRODES + DETER (desmatamento INPE via WFS TerraBrasilis)
     analyses['9.13c_prodes_deter'] = {
       nome: 'Desmatamento (PRODES/DETER)',
@@ -2538,6 +2586,7 @@ app.post('/api/analises', async (req, res) => {
         reserva_proposta_ha:      0,
         veg_nativa_proposta_ha:   0,
       },
+      silos: analyses['9.13e_silos'] || null,
       prodes_deter: {
         prodes:                   analyses['9.13c_prodes_deter']?.prodes || [],
         deter:                    analyses['9.13c_prodes_deter']?.deter || [],
