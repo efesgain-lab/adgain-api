@@ -2833,6 +2833,208 @@ app.get('/api/camadas/:camada', async (req, res) => {
  * POST /api/exportar
  * Export as GeoJSON or KML
  */
+/**
+ * POST /api/analise-ia
+ * Gera laudo técnico via Claude Sonnet usando TODOS os resultados das análises.
+ * Body: { resultados: <objeto completo retornado por /api/analises> }
+ * Response: { laudo: "<texto markdown>" }
+ */
+let _anthropicClient = null;
+function _getAnthropic() {
+  if (_anthropicClient) return _anthropicClient;
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
+  _anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return _anthropicClient;
+}
+
+function _summarizeResultadosForIA(r) {
+  // Compacta o payload da análise em texto estruturado pra IA digerir
+  const lines = [];
+  const fmt = (n, dec=2) => n == null ? '—' : Number(n).toLocaleString('pt-BR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+
+  // 1. Localização
+  if (r?.municipio?.NM_MUN) lines.push(`Município: ${r.municipio.NM_MUN}/${r.municipio.SIGLA_UF || ''}`);
+  if (r?.area_total_ha) lines.push(`Área total selecionada: ${fmt(r.area_total_ha)} ha`);
+  if (r?.centroide) lines.push(`Centroide: ${r.centroide.lat?.toFixed(6)}, ${r.centroide.lng?.toFixed(6)}`);
+
+  // 2. Fundiária — SIGEF, SNCI, CAR
+  const sigef = r?.fundiaria?.sigef || [];
+  if (sigef.length) {
+    lines.push(`\n## FUNDIÁRIA (SIGEF/SNCI/CAR)`);
+    lines.push(`SIGEF: ${sigef.length} parcela(s)`);
+    sigef.forEach(s => lines.push(`  - ${s.nome_area || s.parcela_co}: ${fmt(s.area_hectares)} ha, situação ${s.situacao_i || '?'}, certif. ${s.data_aprov || '?'}`));
+  }
+  const snci = r?.fundiaria?.snci || [];
+  if (snci.length) {
+    lines.push(`SNCI: ${snci.length} imóvel(is)`);
+    snci.forEach(s => lines.push(`  - ${s.nome_imove || s.cod_imovel}: ${fmt(s.qtd_area_p || s.area_hectares)} ha`));
+  }
+  const car = r?.fundiaria?.car || [];
+  if (car.length) {
+    lines.push(`CAR sobreposto: ${car.length} imóvel(is)`);
+    car.forEach(c => {
+      const intersec = c.area_intersecao_ha != null ? ` (${fmt(c.area_intersecao_ha)} ha sobrepostos)` : '';
+      lines.push(`  - ${c.cod_imovel}: ${fmt(c.area_hectares)} ha total${intersec}, status ${c.ind_status || '?'}, ${c.des_condic || '?'}`);
+    });
+  }
+
+  // 3. Reserva Legal Proposta / Vegetação Nativa / Área Consolidada
+  const carArea = r?.car_area || r?.['9.13_car'] || {};
+  if (carArea.reserva_legal_hectares || carArea.app_area_hectares || carArea.vegetacao_nativa_hectares || carArea.area_consolidada_hectares) {
+    lines.push(`\n## ÁREAS CAR INSCRITAS`);
+    if (carArea.reserva_legal_hectares) lines.push(`Reserva Legal Proposta: ${fmt(carArea.reserva_legal_hectares)} ha`);
+    if (carArea.vegetacao_nativa_hectares) lines.push(`Vegetação Nativa: ${fmt(carArea.vegetacao_nativa_hectares)} ha`);
+    if (carArea.area_consolidada_hectares) lines.push(`Área Consolidada: ${fmt(carArea.area_consolidada_hectares)} ha`);
+    if (carArea.app_area_hectares) lines.push(`APP: ${fmt(carArea.app_area_hectares)} ha`);
+  }
+
+  // 4. Conformidade Ambiental
+  if (r?.conformidade) {
+    const c = r.conformidade;
+    lines.push(`\n## CONFORMIDADE AMBIENTAL`);
+    if (c.bioma) lines.push(`Bioma: ${c.bioma}`);
+    if (c.rl_minima_pct) lines.push(`RL mínima legal: ${c.rl_minima_pct}%`);
+    if (c.rl_declarada_ha) lines.push(`RL declarada: ${fmt(c.rl_declarada_ha)} ha`);
+    if (c.flags?.length) {
+      lines.push(`Flags:`);
+      c.flags.forEach(f => lines.push(`  - [${f.severidade}] ${f.titulo}: ${f.detalhe}`));
+    }
+  }
+
+  // 5. PRODES/DETER (desmatamento)
+  if (r?.prodes_deter) {
+    const pd = r.prodes_deter;
+    lines.push(`\n## DESMATAMENTO (INPE PRODES/DETER)`);
+    if (pd.prodes_total_ha != null) lines.push(`PRODES acumulado: ${fmt(pd.prodes_total_ha)} ha`);
+    if (pd.deter_total_ha != null) lines.push(`DETER alertas recentes: ${fmt(pd.deter_total_ha)} ha`);
+    const prodes = pd.prodes || [];
+    if (prodes.length) {
+      lines.push(`PRODES por ano (top 10):`);
+      prodes.slice(0, 10).forEach(p => lines.push(`  - ${p.ano || p.year}: ${fmt(p.area_ha)} ha (${p.classe || p.class || 'desmatamento'})`));
+    }
+    const deter = pd.deter || [];
+    if (deter.length) {
+      lines.push(`DETER alertas (top 5):`);
+      deter.slice(0, 5).forEach(d => lines.push(`  - ${d.data_alerta || d.date}: ${fmt(d.area_ha)} ha, classe ${d.classe || d.class || '?'}`));
+    }
+  }
+
+  // 6. Solo
+  if (r?.solo?.length) {
+    lines.push(`\n## SOLOS (EMBRAPA SiBCS)`);
+    r.solo.forEach(s => {
+      const pct = s.percentual_sobreposicao != null ? ` (${fmt(s.percentual_sobreposicao)}%)` : '';
+      lines.push(`  - ${s.nome}${pct}, sigla ${s.sigla || '?'}, relevo ${s.relevo || s.declividade || '?'}`);
+    });
+  }
+
+  // 7. Geologia
+  if (r?.geologia?.length) {
+    lines.push(`\n## GEOLOGIA`);
+    r.geologia.forEach(g => {
+      const pct = g.percentual_sobreposicao != null ? ` (${fmt(g.percentual_sobreposicao)}%)` : '';
+      lines.push(`  - ${g.nome_unidade || g.nome}${pct}, era ${g.era || '?'}, ${g.descricao || ''}`);
+    });
+  }
+
+  // 8. Hidrografia
+  if (r?.hidrografia) {
+    lines.push(`\n## HIDROGRAFIA`);
+    const h = r.hidrografia;
+    if (h.cursos_dagua_count != null) lines.push(`Cursos d'água: ${h.cursos_dagua_count}`);
+    if (h.padrao_drenagem?.total_cursos) lines.push(`Total cursos (padrão drenagem): ${h.padrao_drenagem.total_cursos}`);
+    if (h.padrao_drenagem?.ordem_maxima) lines.push(`Ordem máxima Strahler: ${h.padrao_drenagem.ordem_maxima}`);
+    if (h.massas_dagua_count != null) lines.push(`Massas d'água: ${h.massas_dagua_count}`);
+  }
+
+  // 9. Pluviometria
+  const pma = r?.pluviometria?.media_anual_30anos ?? r?.pluviometria?.resumo?.media_anual_mm;
+  if (pma != null) lines.push(`\n## CLIMA\nPluviometria média anual (30 anos): ${fmt(pma, 0)} mm`);
+
+  // 10. Altimetria
+  if (r?.altitude) {
+    const a = r.altitude;
+    lines.push(`\n## ALTIMETRIA`);
+    if (a.min_m != null) lines.push(`Cota mínima: ${fmt(a.min_m, 0)} m`);
+    if (a.max_m != null) lines.push(`Cota máxima: ${fmt(a.max_m, 0)} m`);
+    if (a.mean_m != null) lines.push(`Cota média: ${fmt(a.mean_m, 0)} m`);
+    if (a.declividade_pct_media != null) lines.push(`Declividade média: ${fmt(a.declividade_pct_media)}%`);
+  }
+
+  // 11. UCs e Terras Indígenas
+  if (r?.unidades_conservacao?.length) {
+    lines.push(`\n## UCs SOBREPOSTAS\n${r.unidades_conservacao.map(u => `  - ${u.nome} (${u.categoria})`).join('\n')}`);
+  }
+  if (r?.terras_indigenas?.length) {
+    lines.push(`\n## TERRAS INDÍGENAS\n${r.terras_indigenas.map(t => `  - ${t.terrai_nom || t.nome} (${t.fase_ti || ''})`).join('\n')}`);
+  }
+
+  // 12. Mineração
+  if (r?.mineracao?.processos?.length) {
+    lines.push(`\n## MINERAÇÃO (ANM)`);
+    lines.push(`Processos minerários: ${r.mineracao.processos.length}`);
+    r.mineracao.processos.slice(0, 5).forEach(m => lines.push(`  - Proc. ${m.processo || m.numero}: ${m.substancia || '?'}, fase ${m.fase || '?'}`));
+  }
+
+  // 13. Silos
+  if (r?.silos) {
+    lines.push(`\n## SILOS PRÓXIMOS (CONAB SICARM, raio ${r.silos.raio_km || 50}km)`);
+    lines.push(`Total silos: ${r.silos.total_silos || 0}, capacidade total: ${fmt(r.silos.capacidade_total_t, 0)} t`);
+  }
+
+  return lines.join('\n');
+}
+
+app.post('/api/analise-ia', async (req, res) => {
+  try {
+    const client = _getAnthropic();
+    if (!client) {
+      return res.status(503).json({ error: 'ANTHROPIC_API_KEY não configurada no servidor' });
+    }
+    const { resultados } = req.body || {};
+    if (!resultados || typeof resultados !== 'object') {
+      return res.status(400).json({ error: 'body precisa de { resultados }' });
+    }
+
+    const dadosCompactos = _summarizeResultadosForIA(resultados);
+    const t0 = Date.now();
+
+    const systemPrompt = `Você é um perito agrário ambiental brasileiro especializado em diagnóstico de propriedades rurais. Analise os dados georreferenciados fornecidos e produza um LAUDO TÉCNICO em português brasileiro, estruturado em seções com cabeçalhos markdown (##).
+
+Cubra OBRIGATORIAMENTE estas seções (quando houver dados disponíveis):
+1. **Identificação Fundiária**: cruzamento SIGEF/SNCI/CAR, número de matrículas, sobreposições
+2. **Conformidade Ambiental**: avaliação do CAR vs Código Florestal (Lei 12.651/2012) — RL mínima por bioma, vegetação nativa, área consolidada, riscos de irregularidade
+3. **Histórico de Desmatamento**: análise PRODES (acumulado) e DETER (alertas recentes), trend
+4. **Riscos Ambientais e Restrições**: UCs, TIs, APPs, áreas de proteção
+5. **Caracterização Edafoclimática**: solo dominante, aptidão agrícola, declividade, pluviometria, altimetria
+6. **Recursos Hídricos**: cursos d'água, padrão de drenagem, disponibilidade hídrica
+7. **Geologia e Mineração**: unidades geológicas, processos minerários sobrepostos
+8. **Logística e Infraestrutura**: silos próximos (quando informado)
+9. **Recomendações Técnicas**: ações práticas para regularização, oportunidades, alertas legais
+
+Use linguagem técnica precisa mas acessível. Cite valores numéricos exatos. Fundamente recomendações em legislação brasileira (Código Florestal, CAR, Lei de Proteção da Vegetação Nativa, Resoluções CONAMA).
+NÃO inclua disclaimers genéricos ("este laudo é apenas informativo" etc.). Vá direto ao ponto.`;
+
+    const userPrompt = `Dados georreferenciados da propriedade rural:\n\n${dadosCompactos}\n\nProduza o laudo técnico completo.`;
+
+    const msg = await client.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 4000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    const laudo = (msg.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n\n');
+    const ms = Date.now() - t0;
+    console.log(`[analise-ia] ${ms}ms — ${laudo.length} chars`);
+    res.json({ laudo, debug: { ms, model: msg.model, usage: msg.usage } });
+  } catch (error) {
+    console.error('[analise-ia] erro:', error?.message || error);
+    res.status(500).json({ error: String(error?.message || error) });
+  }
+});
+
 app.post('/api/exportar', async (req, res) => {
   try {
     const { geojson, formato = 'geojson' } = req.body;
