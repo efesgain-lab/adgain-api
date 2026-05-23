@@ -2013,26 +2013,37 @@ app.post('/api/analises', async (req, res) => {
         LIMIT 1
       `, [geojsonStr]);
     } else {
-      // Parcela SIGEF/SNCI selecionada → 4 pontos + filtro de sobreposição real
-      // Vizinhos que só confinam têm interseção linear (área = 0) e são excluídos
+      // Parcela SIGEF/SNCI: usa buffer negativo de 5m + ST_Intersects.
+      // Elimina vizinhos que só tocam a fronteira (não cobrem área real) mas captura
+      // qualquer CAR que cobre parte da parcela, independente da forma/tamanho.
+      // Fallback: se buffer -5m esvazia parcelas estreitas, usa parcela original.
       carAreaResult = await safeQuery(`
-        ${samplePtsCTE}
+        WITH parcel_orig AS (
+          SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AS g
+        ),
+        parcel_shrunk AS (
+          SELECT
+            CASE
+              WHEN ST_IsEmpty(s) OR s IS NULL THEN p.g
+              ELSE s
+            END AS g
+          FROM parcel_orig p,
+          LATERAL (
+            SELECT ST_Transform(
+              ST_Buffer(ST_Transform(p.g, 32721), -5.0),
+              ${SRID}
+            ) AS s
+          ) sub
+        )
         SELECT DISTINCT ON (t.gid) t.gid as id,
           t.cod_imovel, t.num_area, t.ind_tipo, t.ind_status, t.des_condic, t.dat_criaca, t.dat_atuali,
           ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${carAreaTable} t, sample_pts sp
-        WHERE ST_Contains(
-          CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-          sp.pt
-        )
-        AND ST_Area(ST_Intersection(
-          CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
-          AND ST_Area(ST_Intersection(
+        FROM ${carAreaTable} t, parcel_shrunk ps
+        WHERE t.geom && ps.g
+          AND ST_Intersects(
             CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-          )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
+            ps.g
+          )
       `, [geojsonStr]);
     }
 
