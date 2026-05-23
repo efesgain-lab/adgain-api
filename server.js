@@ -2030,7 +2030,7 @@ app.post('/api/analises', async (req, res) => {
           FROM parcel_orig p,
           LATERAL (
             SELECT ST_Transform(
-              ST_Buffer(ST_Transform(p.g, 32721), -5.0),
+              ST_Buffer(ST_Transform(p.g, 32721), -20.0),
               ${SRID}
             ) AS s
           ) sub
