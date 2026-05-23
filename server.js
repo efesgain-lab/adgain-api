@@ -2034,16 +2034,29 @@ app.post('/api/analises', async (req, res) => {
               ${SRID}
             ) AS s
           ) sub
+        ),
+        candidatos AS (
+          -- Pre-filtra por bbox + interseção, calcula geom de interseção UMA vez
+          SELECT
+            t.gid, t.cod_imovel, t.num_area, t.ind_tipo, t.ind_status,
+            t.des_condic, t.dat_criaca, t.dat_atuali, t.geom AS car_geom,
+            ST_Intersection(
+              CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+              ps.g
+            ) AS inter_geom
+          FROM ${carAreaTable} t, parcel_shrunk ps
+          WHERE t.geom && ps.g
+            AND ST_Intersects(
+              CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+              ps.g
+            )
         )
-        SELECT DISTINCT ON (t.gid) t.gid as id,
-          t.cod_imovel, t.num_area, t.ind_tipo, t.ind_status, t.des_condic, t.dat_criaca, t.dat_atuali,
-          ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
-        FROM ${carAreaTable} t, parcel_shrunk ps
-        WHERE t.geom && ps.g
-          AND ST_Intersects(
-            CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-            ps.g
-          )
+        SELECT DISTINCT ON (c.gid) c.gid as id,
+          c.cod_imovel, c.num_area, c.ind_tipo, c.ind_status, c.des_condic, c.dat_criaca, c.dat_atuali,
+          ROUND(CAST(ST_Area(ST_Transform(c.car_geom, 32721)) / 10000 AS numeric), 2) as area_hectares,
+          ROUND(CAST(ST_Area(ST_Transform(c.inter_geom, 32721)) / 10000 AS numeric), 2) as area_intersecao_ha
+        FROM candidatos c
+        WHERE ST_Area(ST_Transform(c.inter_geom, 32721)) / 10000 >= 0.5
       `, [geojsonStr]);
     }
 
