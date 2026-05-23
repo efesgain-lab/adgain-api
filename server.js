@@ -2036,27 +2036,38 @@ app.post('/api/analises', async (req, res) => {
           ) sub
         ),
         candidatos AS (
-          -- Pre-filtra por bbox + interseção, calcula geom de interseção UMA vez
+          -- Pre-filtra com parcela ENCOLHIDA (evita vizinhos tangenciais)
+          -- Calcula ST_Intersection com parcela ORIGINAL (medida correta de "dentro")
           SELECT
             t.gid, t.cod_imovel, t.num_area, t.ind_tipo, t.ind_status,
             t.des_condic, t.dat_criaca, t.dat_atuali, t.geom AS car_geom,
             ST_Intersection(
               CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-              ps.g
-            ) AS inter_geom
-          FROM ${carAreaTable} t, parcel_shrunk ps
+              po.g
+            ) AS inter_geom_orig
+          FROM ${carAreaTable} t, parcel_shrunk ps, parcel_orig po
           WHERE t.geom && ps.g
             AND ST_Intersects(
               CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
               ps.g
             )
+        ),
+        candidatos_medidos AS (
+          -- Pre-calcula areas em UTM uma única vez (evita recálculo no WHERE)
+          SELECT
+            c.*,
+            ST_Area(ST_Transform(c.car_geom, 32721)) / 10000 AS area_car_ha,
+            ST_Area(ST_Transform(c.inter_geom_orig, 32721)) / 10000 AS area_intersecao_ha
+          FROM candidatos c
         )
-        SELECT DISTINCT ON (c.gid) c.gid as id,
-          c.cod_imovel, c.num_area, c.ind_tipo, c.ind_status, c.des_condic, c.dat_criaca, c.dat_atuali,
-          ROUND(CAST(ST_Area(ST_Transform(c.car_geom, 32721)) / 10000 AS numeric), 2) as area_hectares,
-          ROUND(CAST(ST_Area(ST_Transform(c.inter_geom, 32721)) / 10000 AS numeric), 2) as area_intersecao_ha
-        FROM candidatos c
-        WHERE ST_Area(ST_Transform(c.inter_geom, 32721)) / 10000 >= 0.5
+        SELECT DISTINCT ON (cm.gid) cm.gid as id,
+          cm.cod_imovel, cm.num_area, cm.ind_tipo, cm.ind_status, cm.des_condic, cm.dat_criaca, cm.dat_atuali,
+          ROUND(CAST(cm.area_car_ha AS numeric), 2) as area_hectares,
+          ROUND(CAST(cm.area_intersecao_ha AS numeric), 2) as area_intersecao_ha,
+          ROUND(CAST((cm.area_car_ha - cm.area_intersecao_ha) AS numeric), 2) as area_fora_ha
+        FROM candidatos_medidos cm
+        WHERE cm.area_intersecao_ha >= 0.5
+          AND (cm.area_car_ha - cm.area_intersecao_ha) <= 2.0
       `, [geojsonStr]);
     }
 
