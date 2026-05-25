@@ -1347,6 +1347,7 @@ app.post('/api/analises', async (req, res) => {
             etnia: f.properties.etnia_nome || null,
             superficie: f.properties.superficie || null,
             fase_ti: f.properties.fase_ti || null,
+            geom_json: f.geometry || null, // fix: incluir geometria para o mapa do relatório PDF
           }));
           // PERF: paraleliza queries de % de sobreposição (antes era loop serial)
           const _pctQueries = _wfsRows.map((_row, _i) => safeQuery(`SELECT ROUND(CAST(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb),${SRID})),ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID})))::geography)/NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID}))::geography),0)*100 AS numeric),2) as pct`, [JSON.stringify(_wfsData.features[_i].geometry), geojsonStr]).catch(() => ({ rows: [{ pct: null }] })));
