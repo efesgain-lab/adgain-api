@@ -158,6 +158,62 @@ async function ensureLogisticaTable() {
   }
 }
 
+async function ensureRodoviasTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS infra.rodovias_principais (
+        id SERIAL PRIMARY KEY,
+        codigo TEXT NOT NULL UNIQUE,
+        nome TEXT NOT NULL,
+        jurisdicao TEXT,
+        pavimentacao TEXT,
+        geom geometry(LineString, 4674) NOT NULL
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_rodovias_geom ON infra.rodovias_principais USING GIST (geom)`);
+    const seedSql = `
+      INSERT INTO infra.rodovias_principais (codigo, nome, jurisdicao, pavimentacao, geom)
+      VALUES
+      ('BR-101', 'BR-101 (Litoral)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-35.2 -5.78, -35.71 -7.12, -34.83 -6.97, -34.85 -9.67, -37.07 -10.95, -38.51 -12.97, -40.31 -20.32, -43.18 -22.9, -46.31 -23.96, -48.66 -26.91, -48.62 -26.24, -49.27 -25.43, -50.07 -29.68, -52.1 -32.03)', 4674)),
+      ('BR-116', 'BR-116 (eixo leste)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-38.54 -3.72, -38.51 -12.97, -40.84 -14.86, -43.94 -19.92, -46.63 -23.55, -49.27 -25.43, -51.1 -30.04, -52.1 -32.03)', 4674)),
+      ('BR-040', 'BR-040 (RJ-DF)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-43.18 -22.9, -43.1 -22.51, -43.94 -19.92, -44.94 -17.34, -47.93 -15.83)', 4674)),
+      ('BR-153', 'BR-153 (Belém-Brasília)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-48.5 -1.46, -48.36 -3.79, -48.42 -10.71, -49.27 -16.69, -49.39 -20.81, -48.27 -18.92, -47.93 -15.83)', 4674)),
+      ('BR-163', 'BR-163 (Cuiabá-Santarém)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-56.1 -15.6, -55.71 -12.55, -55.92 -13.04, -55.51 -11.86, -55.97 -4.28, -54.71 -2.44)', 4674)),
+      ('BR-364', 'BR-364 (Cuiabá-Rio Branco)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-56.1 -15.6, -57.68 -16.07, -58.27 -15.5, -63.9 -8.76, -67.81 -9.97, -72.66 -7.97)', 4674)),
+      ('BR-262', 'BR-262 (Vitória-Cuiabá)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-40.31 -20.32, -43.94 -19.92, -44.99 -19.46, -46.99 -19.74, -49.37 -20.4, -54.62 -20.46, -57.68 -16.07, -56.1 -15.6)', 4674)),
+      ('BR-070', 'BR-070 (Brasília-Cáceres)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-47.93 -15.83, -50.93 -16.33, -52.27 -15.89, -54.78 -15.55, -57.68 -16.07)', 4674)),
+      ('BR-381', 'BR-381 (Fernão Dias)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-43.94 -19.92, -45.42 -21.99, -46.63 -23.55)', 4674)),
+      ('BR-242', 'BR-242 (Salvador-Sorriso)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-38.51 -12.97, -41.07 -13.41, -44.52 -13.2, -45.43 -12.2, -47.95 -11.71, -50.16 -12.83, -52.55 -12.83, -55.72 -12.55)', 4674)),
+      ('BR-158', 'BR-158 (Pelotas-Marabá)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-52.34 -31.77, -53.81 -29.86, -54.05 -25.96, -53.45 -24.96, -52.61 -19.99, -52.39 -15.86, -51.13 -12.96, -50.05 -7.46, -49.12 -5.37)', 4674)),
+      ('BR-080', 'BR-080 (Brasília-Aragarças)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-47.93 -15.83, -50.34 -15.18, -52.24 -15.9)', 4674)),
+      ('BR-060', 'BR-060 (Brasília-Bela Vista)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-47.93 -15.83, -50.93 -16.33, -54.62 -20.46, -56.45 -22.1)', 4674)),
+      ('BR-369', 'BR-369 (Paraná-Bahia)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-53.46 -23.41, -51.93 -23.42, -50.31 -25.3, -49.27 -25.43)', 4674)),
+      ('BR-376', 'BR-376 (Paraná-SC)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-51.93 -23.42, -50.31 -25.3, -49.27 -25.43, -48.66 -26.91)', 4674)),
+      ('BR-282', 'BR-282 (SC oeste-leste)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-48.55 -27.59, -50.13 -27.21, -52.13 -26.78, -53.5 -26.49)', 4674)),
+      ('BR-290', 'BR-290 (Free Way RS)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-51.23 -30.03, -52.43 -30.04, -53.46 -30.04, -55.78 -30.86)', 4674)),
+      ('BR-285', 'BR-285 (RS norte)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-51.18 -28.27, -52.41 -28.26, -54.91 -27.66, -55.78 -28.66)', 4674)),
+      ('BR-414', 'BR-414 (GO)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-49.25 -16.68, -49.1 -15.94, -49.95 -14.13)', 4674)),
+      ('BR-251', 'BR-251 (Janaúba-MG)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-47.93 -15.83, -44.36 -15.05, -42.86 -13.51)', 4674)),
+      ('BR-135', 'BR-135 (MG-MA)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-43.94 -19.92, -43.92 -16.73, -44.36 -12.3, -44.3 -9.62, -45.93 -7.1, -44.3 -2.53)', 4674)),
+      ('BR-230', 'BR-230 (Transamazônica)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-34.83 -6.97, -37.32 -7.1, -41.78 -8.05, -44.99 -5.51, -49.12 -5.37, -55.99 -4.27, -60.02 -3.13, -65.74 -4.42, -69.95 -4.1)', 4674)),
+      ('BR-174', 'BR-174 (Manaus-Boa Vista)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-60.02 -3.13, -60.71 -1.41, -60.66 2.81)', 4674)),
+      ('BR-101N', 'BR-101 Norte (BA-RN)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-38.51 -12.97, -37.07 -10.95, -34.85 -9.67, -35.74 -9.65, -34.85 -8.05, -34.83 -6.97, -35.2 -5.78)', 4674)),
+      ('BR-369-MS', 'BR-369 MS', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-54.62 -20.46, -52.41 -20.18, -50.31 -20.08)', 4674)),
+      ('BR-470', 'BR-470 (SC)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-48.66 -26.91, -49.07 -26.91, -50.5 -27.1)', 4674)),
+      ('BR-280', 'BR-280 (SC norte)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-48.61 -26.24, -49.07 -26.27, -50.36 -26.42, -52.36 -26.41)', 4674)),
+      ('BR-422', 'BR-422 (RO)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-63.9 -8.76, -62.06 -9.3)', 4674)),
+      ('BR-156', 'BR-156 (AP)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-51.05 -0.04, -50.34 3.83)', 4674)),
+      ('BR-104', 'BR-104 (PE)', 'federal', 'pavimentada', ST_GeomFromText('LINESTRING(-34.85 -9.67, -35.74 -9.65, -36.69 -8.89)', 4674))
+      ON CONFLICT (codigo) DO NOTHING
+    `;
+    const res = await pool.query(seedSql);
+    const total = (await pool.query(`SELECT COUNT(*) FROM infra.rodovias_principais`)).rows[0].count;
+    console.log(`[startup] rodovias principais OK — ${total} BRs (seed inseriu ${res.rowCount} novos)`);
+  } catch (err) {
+    console.error('[startup] ensureRodoviasTable err:', err.message);
+  }
+}
+
 async function ensureGistIndexes() {
   const client = await pool.connect();
   try {
@@ -2312,6 +2368,8 @@ app.post('/api/analises', async (req, res) => {
       portos_fluviais: [],
       portos_secos: [],
       terminais_ferroviarios: [],
+      rodovias_que_cruzam: [],
+      rodovias_proximas: [],
     };
     try {
       const cidadesRes = await pool.query(`
@@ -2345,6 +2403,32 @@ app.post('/api/analises', async (req, res) => {
                   : r.tipo === 'terminal_ferroviario' ? 'terminais_ferroviarios' : null;
         if (key) analyses['9.13f_logistica'][key].push(r);
       });
+
+      // Rodovias que cruzam a parcela
+      const rodCruzaRes = await pool.query(`
+        SELECT codigo, nome, jurisdicao, pavimentacao
+        FROM infra.rodovias_principais
+        WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
+        ORDER BY codigo
+      `, [geojsonStr]).catch(e => { console.warn('[LOGI rod cruza]', e.message); return { rows: [] }; });
+      analyses['9.13f_logistica'].rodovias_que_cruzam = rodCruzaRes.rows || [];
+
+      // Rodovias próximas (≤25km) que NÃO cruzam
+      const rodProxRes = await pool.query(`
+        WITH parc AS (
+          SELECT ST_PointOnSurface(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) AS centroide,
+                 ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS poligono
+        )
+        SELECT r.codigo, r.nome, r.jurisdicao, r.pavimentacao,
+          ROUND(CAST(ST_Distance(r.geom::geography, parc.centroide::geography) / 1000.0 AS numeric), 1) AS distancia_km
+        FROM infra.rodovias_principais r, parc
+        WHERE ST_Distance(r.geom::geography, parc.poligono::geography) <= 25000
+          AND NOT ST_Intersects(r.geom, parc.poligono)
+        ORDER BY distancia_km ASC
+        LIMIT 8
+      `, [geojsonStr]).catch(e => { console.warn('[LOGI rod prox]', e.message); return { rows: [] }; });
+      analyses['9.13f_logistica'].rodovias_proximas = rodProxRes.rows || [];
+
     } catch (e) { console.warn('[LOGI]', e.message); }
 
     // 9.15 HIDROLOGIA + APTIDÃO PIVÔS CENTRAIS — análise integrada
@@ -3417,6 +3501,16 @@ function _summarizeResultadosForIA(r) {
         lines.push(`Terminais ferroviários próximos (top 5):`);
         tf.forEach(t => lines.push(`  - ${t.nome} (${t.municipio}/${t.uf}): ${fmt(t.distancia_km, 1)} km`));
       }
+      const rc = lg.rodovias_que_cruzam || [];
+      const rp = lg.rodovias_proximas || [];
+      if (rc.length) {
+        lines.push(`Rodovias que CRUZAM a parcela:`);
+        rc.forEach(r => lines.push(`  - ${r.codigo} (${r.nome}) — ${r.jurisdicao}, ${r.pavimentacao}`));
+      }
+      if (rp.length) {
+        lines.push(`Rodovias próximas (≤25 km, ordenadas por distância):`);
+        rp.forEach(r => lines.push(`  - ${r.codigo} (${r.nome}): ${fmt(r.distancia_km, 1)} km — ${r.jurisdicao}, ${r.pavimentacao}`));
+      }
     }
   }
 
@@ -3502,7 +3596,9 @@ Cubra OBRIGATORIAMENTE estas seções (quando houver dados disponíveis):
 
 10. **Substâncias Minerais Prováveis (ranking)**: liste em ORDEM DE PROBABILIDADE 3 a 5 substâncias mais prováveis na parcela, com a evidência que sustenta cada uma. Ex: "Ouro (alta) — falhas transcorrentes NE-SW em greenstone arqueano + processos ANM vizinhos de Au".
 
-11. **Alvos de Investigação e Próximas Etapas**: recomende ações práticas:
+11. **Acesso e Rota Sugerida**: descreva em texto narrativo como chegar à parcela partindo da cidade-sede mais próxima. Cite as principais rodovias federais (BR-XXX) e estaduais relevantes (mesmo as não detectadas automaticamente, use seu conhecimento sobre a malha rodoviária brasileira). Indique direção cardinal (NE/SO/etc.) e distância aproximada. Mencione pontos de referência (postos, entroncamentos, balsas se houver) e condições típicas da via (asfaltada/de chão/sazonal). Se a parcela for em região remota (Amazônia, sertão), avise sobre limitações (período chuvoso, balsas suspensas, falta de combustível).
+
+12. **Alvos de Investigação e Próximas Etapas**: recomende ações práticas:
    - **Geoquímica de solo**: malha de amostragem (espaçamento, profundidade, elementos analíticos)
    - **Geofísica**: magnetometria, gamaespectrometria, IP/resistividade — qual técnica indicada pra qual alvo
    - **Mapeamento de detalhe**: escala 1:25.000 ou 1:10.000, focos prioritários
@@ -4129,6 +4225,7 @@ app.use((err, req, res, next) => {
 
 ensureGistIndexes().catch(console.error);
 ensureLogisticaTable().catch(console.error);
+ensureRodoviasTable().catch(console.error);
 
 // Start server
 app.listen(port, () => {
