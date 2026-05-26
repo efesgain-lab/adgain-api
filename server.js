@@ -2304,6 +2304,246 @@ app.post('/api/analises', async (req, res) => {
       }
     }
 
+    // 9.13f LOGÍSTICA — distâncias até cidades, portos e terminais
+    analyses['9.13f_logistica'] = {
+      nome: 'Logística',
+      cidades_proximas: [],
+      portos_maritimos: [],
+      portos_fluviais: [],
+      portos_secos: [],
+      terminais_ferroviarios: [],
+    };
+    try {
+      const cidadesRes = await pool.query(`
+        WITH parc AS (
+          SELECT ST_PointOnSurface(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) AS centroide
+        )
+        SELECT m."NM_MUN" AS nome, m."SIGLA_UF" AS uf,
+          ROUND(CAST(ST_Distance(ST_Transform(m.geom, 4326)::geography, ST_Transform(parc.centroide, 4326)::geography) / 1000.0 AS numeric), 1) AS distancia_km
+        FROM municipios.municipios_2024 m, parc
+        WHERE ST_DWithin(ST_Transform(m.geom, 4326)::geography, ST_Transform(parc.centroide, 4326)::geography, 200000)
+        ORDER BY distancia_km ASC LIMIT 15
+      `, [geojsonStr]).catch(e => { console.warn('[LOGI cidades]', e.message); return { rows: [] }; });
+      analyses['9.13f_logistica'].cidades_proximas = cidadesRes.rows || [];
+
+      const termsRes = await pool.query(`
+        WITH parc AS (
+          SELECT ST_PointOnSurface(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) AS centroide
+        ),
+        ranked AS (
+          SELECT t.nome, t.tipo, t.municipio, t.uf,
+            ROUND(CAST(ST_Distance(t.geom::geography, parc.centroide::geography) / 1000.0 AS numeric), 1) AS distancia_km,
+            ROW_NUMBER() OVER (PARTITION BY t.tipo ORDER BY ST_Distance(t.geom::geography, parc.centroide::geography) ASC) AS rn
+          FROM infra.terminais_logisticos t, parc
+        )
+        SELECT nome, tipo, municipio, uf, distancia_km FROM ranked WHERE rn <= 5 ORDER BY tipo, distancia_km
+      `, [geojsonStr]).catch(e => { console.warn('[LOGI terms]', e.message); return { rows: [] }; });
+      (termsRes.rows || []).forEach(r => {
+        const key = r.tipo === 'porto_maritimo' ? 'portos_maritimos'
+                  : r.tipo === 'porto_fluvial'  ? 'portos_fluviais'
+                  : r.tipo === 'porto_seco'      ? 'portos_secos'
+                  : r.tipo === 'terminal_ferroviario' ? 'terminais_ferroviarios' : null;
+        if (key) analyses['9.13f_logistica'][key].push(r);
+      });
+    } catch (e) { console.warn('[LOGI]', e.message); }
+
+    // 9.15 HIDROLOGIA + APTIDÃO PIVÔS CENTRAIS — análise integrada
+    analyses['9.15_hidrologia_pivos'] = {
+      nome: 'Hidrologia e Aptidão para Pivôs Centrais',
+      iap_score: 0,
+      iap_classificacao: 'baixa',
+      iap_componentes: {},
+      configuracoes_sugeridas: [],
+      demanda_hidrica: {},
+      fontes_agua: [],
+      restricoes: [],
+      outorga: {},
+      sistemas_irrigacao_comparativo: [],
+      aptidao_culturas: [],
+      custos_estimados: {},
+    };
+    try {
+      const _decl = (analyses?.['9.12_altitude']?.declividade_pct_media ?? analyses?.['9.12_altitude']?.declividade_pct ?? 5);
+      const _pma = (analyses?.['9.11_pluviometria']?.media_anual_30anos ?? analyses?.['9.11_pluviometria']?.resumo?.media_anual_mm ?? 1200);
+      const _solos = analyses?.['9.4_solo']?.data || [];
+      const _solosNomes = _solos.map(s => (s.nome || '').toUpperCase());
+      const _bioma = analyses?.['9.3_bioma']?.data?.[0]?.nome || '';
+      const _bacias = analyses?.['9.10_hidrografia']?.bacias || [];
+      const _cursos = analyses?.['9.10_hidrografia']?.cursos_agua_count || 0;
+      const _padraoDren = analyses?.['9.10_hidrografia']?.padrao_drenagem || {};
+      const _aqPoroso = analyses?.['9.13b_aquiferos']?.poroso || [];
+      const _aqFraturado = analyses?.['9.13b_aquiferos']?.fraturado || [];
+      const _aqCarstico = analyses?.['9.13b_aquiferos']?.carstico || [];
+      const _areaHa = parseFloat(analyses?.area_total_ha || 0) || 100;
+
+      // (a) Declividade — 30%
+      let scDecl = 0;
+      if (_decl <= 3) scDecl = 100;
+      else if (_decl <= 8) scDecl = 90 - (_decl - 3) * 4;
+      else if (_decl <= 13) scDecl = 70 - (_decl - 8) * 8;
+      else if (_decl <= 20) scDecl = 30 - (_decl - 13) * 4;
+      else scDecl = 0;
+
+      // (b) Solo — 20%
+      const _hasArgila = _solosNomes.some(n => /LATOSSOLO|ARGISSOLO|NITOSSOLO|CAMBISSOLO/.test(n));
+      const _hasArenoso = _solosNomes.some(n => /NEOSSOLO\s+QUARTZAR/.test(n));
+      const _hasGleico = _solosNomes.some(n => /GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/.test(n));
+      let scSolo = 60;
+      if (_hasArgila && !_hasArenoso) scSolo = 90;
+      if (_hasArenoso) scSolo = 45;
+      if (_hasGleico) scSolo = 25;
+
+      // (c) Água — 25%
+      let scAgua = 30;
+      if (_cursos >= 3 || _bacias.length >= 1) scAgua += 30;
+      if (_padraoDren.ordem_maxima >= 4) scAgua += 15;
+      if (_aqFraturado.length || _aqPoroso.length) scAgua += 20;
+      if (_aqCarstico.length) scAgua += 5;
+      scAgua = Math.min(100, scAgua);
+
+      // (d) Déficit — 15%
+      const etoAnual = 1825;
+      const deficit = Math.max(0, etoAnual - _pma);
+      let scDeficit = 0;
+      if (deficit >= 800) scDeficit = 100;
+      else if (deficit >= 500) scDeficit = 85;
+      else if (deficit >= 300) scDeficit = 70;
+      else if (deficit >= 150) scDeficit = 50;
+      else if (deficit >= 50) scDeficit = 30;
+      else scDeficit = 10;
+
+      // (e) Forma — 10%
+      let scForma = 50;
+      if (_areaHa >= 60) scForma += 20;
+      if (_areaHa >= 200) scForma += 20;
+      scForma = Math.min(100, scForma);
+
+      const iap = Math.round(scDecl*0.30 + scSolo*0.20 + scAgua*0.25 + scDeficit*0.15 + scForma*0.10);
+      const classif = iap >= 75 ? 'alta' : (iap >= 50 ? 'media' : 'baixa');
+
+      analyses['9.15_hidrologia_pivos'].iap_score = iap;
+      analyses['9.15_hidrologia_pivos'].iap_classificacao = classif;
+      analyses['9.15_hidrologia_pivos'].iap_componentes = {
+        declividade: { score: Math.round(scDecl), peso: 30, valor: _decl },
+        solo: { score: Math.round(scSolo), peso: 20, valor: _solos.length ? (_solos[0].nome || '?') : '?' },
+        disponibilidade_agua: { score: Math.round(scAgua), peso: 25, cursos: _cursos, aquiferos: _aqPoroso.length + _aqFraturado.length + _aqCarstico.length },
+        deficit_hidrico: { score: Math.round(scDeficit), peso: 15, deficit_mm: Math.round(deficit), pluv_mm: Math.round(_pma) },
+        forma_tamanho: { score: Math.round(scForma), peso: 10, area_ha: _areaHa }
+      };
+
+      // Empacotamento de pivôs (maior círculo inscrito)
+      try {
+        const pivosRes = await pool.query(`
+          WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 32721) AS g),
+          tentativas AS (
+            SELECT raio, ST_Buffer(p.g, -raio) AS centros, PI()*raio*raio/10000.0 AS area_p
+            FROM p, (VALUES (309), (276), (240), (200), (160), (120)) AS r(raio)
+          ),
+          melhor AS (
+            SELECT raio, area_p, ST_AsGeoJSON(ST_Transform(ST_PointOnSurface(centros), 4674)) AS centro_wgs_json
+            FROM tentativas WHERE NOT ST_IsEmpty(centros) ORDER BY raio DESC LIMIT 1
+          )
+          SELECT * FROM melhor
+        `, [geojsonStr]).catch(e => { console.warn('[PIVOS]', e.message); return { rows: [] }; });
+        if (pivosRes.rows.length > 0) {
+          const row = pivosRes.rows[0];
+          const centroWgs = JSON.parse(row.centro_wgs_json || '{}');
+          const raio = parseFloat(row.raio);
+          const areaP = parseFloat(row.area_p);
+          analyses['9.15_hidrologia_pivos'].configuracoes_sugeridas.push({
+            tipo: 'pivo_central',
+            quantidade: 1,
+            raio_m: raio,
+            area_ha_cada: Math.round(areaP * 100) / 100,
+            area_total_ha: Math.round(areaP * 100) / 100,
+            cobertura_pct: Math.round((areaP / _areaHa) * 100),
+            centros: centroWgs.coordinates ? [{ lng: centroWgs.coordinates[0], lat: centroWgs.coordinates[1], raio_m: raio, area_ha: Math.round(areaP*100)/100 }] : []
+          });
+        }
+      } catch (e) { console.warn('[PIVOS empacotamento]', e.message); }
+
+      // Demanda hídrica
+      const etoDiario = /CAATINGA/i.test(_bioma) ? 6.0 : /CERRADO/i.test(_bioma) ? 5.2 : /MATA.*ATL/i.test(_bioma) ? 4.5 : /PAMPA/i.test(_bioma) ? 3.8 : /AMAZ/i.test(_bioma) ? 4.0 : /PANTANAL/i.test(_bioma) ? 5.0 : 5.0;
+      const cfg0 = analyses['9.15_hidrologia_pivos'].configuracoes_sugeridas[0];
+      const areaIrrigada = cfg0?.area_total_ha || Math.min(_areaHa, 100);
+      const consumoDiario_m3 = (etoDiario * 0.95 * areaIrrigada * 10) / 0.85;
+      const vazao_m3h = consumoDiario_m3 / 20;
+      const vazao_Ls = vazao_m3h * 1000 / 3600;
+      analyses['9.15_hidrologia_pivos'].demanda_hidrica = {
+        eto_diario_mm: etoDiario, kc_medio: 0.95, eficiencia_irrigacao: 0.85,
+        consumo_diario_m3: Math.round(consumoDiario_m3),
+        vazao_necessaria_m3h: Math.round(vazao_m3h),
+        vazao_necessaria_Ls: Math.round(vazao_Ls * 10) / 10,
+        deficit_anual_mm: Math.round(deficit), bioma: _bioma || '?'
+      };
+
+      // Fontes
+      const fontes = [];
+      if (_cursos >= 1 || _bacias.length >= 1) {
+        fontes.push({ tipo: 'superficial', nome: (analyses?.['9.10_hidrografia']?.nomes_rios || []).slice(0, 3).join(', ') || 'Curso d\u00e1gua local', bacia: _bacias[0]?.nome_bacia || _bacias[0]?.nome || '?', ordem_strahler: _padraoDren.ordem_maxima || null, recomendacao: _padraoDren.ordem_maxima >= 4 ? 'Fonte primária — outorga superficial viável' : 'Fonte secundária — verificar perenidade', orgao_outorga: 'ANA ou órgão estadual' });
+      }
+      if (_aqFraturado.length) fontes.push({ tipo: 'subterranea_fraturada', nome: _aqFraturado.map(a => a.nome).filter(Boolean).join(', ') || 'Aquífero fraturado', profundidade_tipica_m: '80-200', vazao_tipica_m3h: '5-30', recomendacao: 'Poço tubular profundo — produtividade variável' });
+      if (_aqPoroso.length) fontes.push({ tipo: 'subterranea_porosa', nome: _aqPoroso.map(a => a.nome).filter(Boolean).join(', ') || 'Aquífero poroso', profundidade_tipica_m: '30-150', vazao_tipica_m3h: '20-80', recomendacao: 'Poço tubular — boa produtividade' });
+      if (_aqCarstico.length) fontes.push({ tipo: 'subterranea_carstica', nome: _aqCarstico.map(a => a.nome).filter(Boolean).join(', ') || 'Aquífero cárstico', recomendacao: 'Vazão alta possível, risco de subsidência — estudo geotécnico' });
+      if (!fontes.length) fontes.push({ tipo: 'nenhuma_identificada', recomendacao: 'Avaliar captação em propriedade vizinha ou caminhão-pipa' });
+      analyses['9.15_hidrologia_pivos'].fontes_agua = fontes;
+
+      // Restrições
+      const restr = [];
+      if (_decl > 13) restr.push({ severidade: 'critica', texto: `Declividade média ${_decl.toFixed(1)}% — acima do limite técnico de 13% para pivô central` });
+      else if (_decl > 8) restr.push({ severidade: 'atencao', texto: `Declividade média ${_decl.toFixed(1)}% — operação possível mas com custo de energia maior` });
+      if (_hasArenoso) restr.push({ severidade: 'atencao', texto: 'NEOSSOLO QUARTZARÊNICO presente — risco de lixiviação' });
+      if (_hasGleico) restr.push({ severidade: 'critica', texto: 'GLEISSOLO/PLANOSSOLO — má drenagem natural, pivô contraindicado' });
+      if (deficit < 100) restr.push({ severidade: 'atencao', texto: `Pluviometria ${Math.round(_pma)}mm/ano — ROI baixo em região úmida` });
+      if (!_cursos && !_aqPoroso.length && !_aqFraturado.length) restr.push({ severidade: 'critica', texto: 'Nenhuma fonte de água identificada — captação externa necessária' });
+      if (_areaHa < 30) restr.push({ severidade: 'atencao', texto: `Parcela com ${_areaHa.toFixed(0)}ha — CAPEX alto, considerar gotejamento ou aspersão linear` });
+      analyses['9.15_hidrologia_pivos'].restricoes = restr;
+
+      analyses['9.15_hidrologia_pivos'].outorga = {
+        orgao_competente: fontes[0]?.orgao_outorga || 'Verificar com órgão estadual',
+        tempo_medio_dias: 60,
+        documentos_basicos: ['Declaração de uso', 'Cadastro CNARH', 'Outorga preventiva', 'Outorga de direito', 'Projeto técnico assinado']
+      };
+
+      analyses['9.15_hidrologia_pivos'].sistemas_irrigacao_comparativo = [
+        { sistema: 'Pivô central', capex_rha: 7500, opex_rha_ano: 1200, eficiencia: 85, aptidao_local: classif, observacao: 'Padrão para grandes áreas' },
+        { sistema: 'Aspersão convencional', capex_rha: 5000, opex_rha_ano: 1000, eficiencia: 75, aptidao_local: _decl <= 20 ? 'alta' : 'media', observacao: 'Flexível mas trabalhoso' },
+        { sistema: 'Gotejamento', capex_rha: 12000, opex_rha_ano: 1500, eficiencia: 95, aptidao_local: 'alta', observacao: 'Eficiência máxima — frutas, hortaliças, café' },
+        { sistema: 'Sulcos / inundação', capex_rha: 3000, opex_rha_ano: 800, eficiencia: 50, aptidao_local: _decl <= 2 ? 'alta' : 'baixa', observacao: 'Só em terreno muito plano' }
+      ];
+
+      const aptCultura = (nome, plu_min, plu_max, decl_max, exige_argiloso, observ) => {
+        let apt = 'alta';
+        const motivos = [];
+        if (_pma < plu_min - 200 && iap < 50) { apt = 'baixa'; motivos.push(`Pluviometria baixa sem irrigação`); }
+        if (_decl > decl_max) { apt = 'baixa'; motivos.push(`Declividade ${_decl}% > limite ${decl_max}%`); }
+        if (exige_argiloso && _hasArenoso && !_hasArgila) { apt = apt === 'alta' ? 'media' : 'baixa'; motivos.push('Solo arenoso desfavorece'); }
+        return { cultura: nome, aptidao: apt, observacoes: motivos.length ? motivos.join('; ') : observ };
+      };
+      analyses['9.15_hidrologia_pivos'].aptidao_culturas = [
+        aptCultura('Soja', 600, 1800, 15, false, 'Cultura amplamente adaptada'),
+        aptCultura('Milho', 500, 1800, 15, false, 'Excelente resposta à irrigação'),
+        aptCultura('Algodão', 700, 1300, 10, true, 'Exige solo bem drenado'),
+        aptCultura('Cana-de-açúcar', 1100, 1800, 8, true, 'Tradicional irrigado'),
+        aptCultura('Café', 1200, 1800, 25, false, 'Pivô viável; mais comum gotejamento'),
+        aptCultura('Feijão', 300, 900, 13, false, 'Ótima para safrinha irrigada'),
+        aptCultura('Hortaliças', 400, 1200, 8, false, 'Alta exigência — pivô ou gotejamento'),
+        aptCultura('Pastagem', 600, 1800, 30, false, 'Aumenta lotação 3-5x'),
+        aptCultura('Arroz inundado', 1100, 2200, 1, true, 'Incompatível com pivô')
+      ];
+
+      const areaCalc = cfg0?.area_total_ha || areaIrrigada;
+      analyses['9.15_hidrologia_pivos'].custos_estimados = {
+        sistema_recomendado: classif === 'alta' ? 'Pivô central' : (classif === 'media' ? 'Aspersão convencional ou Pivô parcial' : 'Gotejamento (cultura específica) ou sem irrigação'),
+        capex_total_estimado: Math.round(areaCalc * 7500),
+        opex_anual_estimado: Math.round(areaCalc * 1200),
+        poco_tubular_estimado: fontes.some(f => f.tipo.startsWith('subterranea')) ? 'R$ 80.000–150.000' : null,
+        outorga_estimado: 'R$ 5.000–15.000',
+        prazo_payback_anos: classif === 'alta' ? '3-5' : (classif === 'media' ? '5-8' : '> 8 ou inviável'),
+        observacao: 'Valores médios 2024'
+      };
+    } catch (e) { console.error('[HIDRO_PIVOS]', e.message); }
+
     // 9.13c PRODES + DETER (desmatamento INPE via WFS TerraBrasilis)
     analyses['9.13c_prodes_deter'] = {
       nome: 'Desmatamento (PRODES/DETER)',
@@ -2731,6 +2971,7 @@ app.post('/api/analises', async (req, res) => {
       },
       silos: analyses['9.13e_silos'] || null,
       logistica: analyses['9.13f_logistica'] || null,
+      hidrologia_pivos: analyses['9.15_hidrologia_pivos'] || null,
       prodes_deter: {
         prodes:                   analyses['9.13c_prodes_deter']?.prodes || [],
         deter:                    analyses['9.13c_prodes_deter']?.deter || [],
@@ -3176,6 +3417,41 @@ function _summarizeResultadosForIA(r) {
         lines.push(`Terminais ferroviários próximos (top 5):`);
         tf.forEach(t => lines.push(`  - ${t.nome} (${t.municipio}/${t.uf}): ${fmt(t.distancia_km, 1)} km`));
       }
+    }
+  }
+
+  // 12c. APTIDÃO HIDROLÓGICA PARA PIVÔS CENTRAIS
+  const hp = r?.hidrologia_pivos;
+  if (hp) {
+    lines.push(`\n## APTIDÃO HIDROLÓGICA PARA PIVÔS CENTRAIS`);
+    lines.push(`Índice de Aptidão Pivotal (IAP): **${hp.iap_score}/100** — classificação: ${(hp.iap_classificacao||'').toUpperCase()}`);
+    if (hp.iap_componentes) {
+      Object.entries(hp.iap_componentes).forEach(([k, v]) => lines.push(`  - ${k}: score ${v.score}/100 (peso ${v.peso}%)`));
+    }
+    if (hp.configuracoes_sugeridas?.length) {
+      const c = hp.configuracoes_sugeridas[0];
+      lines.push(`Configuração sugerida: ${c.quantidade} pivô(s), raio ${c.raio_m}m, área irrigada ${c.area_total_ha}ha (${c.cobertura_pct}% da parcela)`);
+    }
+    if (hp.demanda_hidrica) {
+      const d = hp.demanda_hidrica;
+      lines.push(`Demanda hídrica: ETo=${d.eto_diario_mm}mm/dia, consumo ${d.consumo_diario_m3}m³/dia, vazão necessária ${d.vazao_necessaria_m3h}m³/h (${d.vazao_necessaria_Ls}L/s)`);
+      lines.push(`Déficit hídrico anual: ${d.deficit_anual_mm}mm (bioma ${d.bioma})`);
+    }
+    if (hp.fontes_agua?.length) {
+      lines.push(`Fontes de água:`);
+      hp.fontes_agua.forEach(f => lines.push(`  - ${f.tipo}: ${f.nome || '?'} — ${f.recomendacao}`));
+    }
+    if (hp.restricoes?.length) {
+      lines.push(`Restrições:`);
+      hp.restricoes.forEach(rr => lines.push(`  - [${rr.severidade}] ${rr.texto}`));
+    }
+    if (hp.aptidao_culturas?.length) {
+      lines.push(`Aptidão por cultura:`);
+      hp.aptidao_culturas.forEach(c => lines.push(`  - ${c.cultura}: ${c.aptidao} — ${c.observacoes}`));
+    }
+    if (hp.custos_estimados) {
+      const cc = hp.custos_estimados;
+      lines.push(`Custo estimado: CAPEX R$ ${fmt(cc.capex_total_estimado, 0)}, OPEX/ano R$ ${fmt(cc.opex_anual_estimado, 0)}, payback ${cc.prazo_payback_anos} anos`);
     }
   }
 
