@@ -2850,16 +2850,16 @@ function _getAnthropic() {
 }
 
 function _summarizeResultadosForIA(r) {
-  // Compacta o payload da análise em texto estruturado pra IA digerir
+  // Compacta o payload da análise em texto estruturado pra IA (geólogo prospector) digerir
   const lines = [];
   const fmt = (n, dec=2) => n == null ? '—' : Number(n).toLocaleString('pt-BR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
-  // 1. Localização
+  // 1. Localização da parcela
   if (r?.municipio?.NM_MUN) lines.push(`Município: ${r.municipio.NM_MUN}/${r.municipio.SIGLA_UF || ''}`);
   if (r?.area_total_ha) lines.push(`Área total selecionada: ${fmt(r.area_total_ha)} ha`);
   if (r?.centroide) lines.push(`Centroide: ${r.centroide.lat?.toFixed(6)}, ${r.centroide.lng?.toFixed(6)}`);
 
-  // 2. Fundiária — SIGEF, SNCI, CAR
+  // 2. Fundiária (resumido — não é foco do laudo geológico)
   const sigef = r?.fundiaria?.sigef || [];
   if (sigef.length) {
     lines.push(`\n## FUNDIÁRIA (SIGEF/SNCI/CAR)`);
@@ -2921,31 +2921,65 @@ function _summarizeResultadosForIA(r) {
     }
   }
 
-  // 6. Solo
+  // 6. GEOLOGIA — unidades litoestratigráficas
+  if (r?.geologia?.length) {
+    lines.push(`\n## CONTEXTO GEOLÓGICO`);
+    r.geologia.forEach(g => {
+      const pct = g.percentual_sobreposicao != null ? ` (${fmt(g.percentual_sobreposicao)}%)` : '';
+      const grupo = g.grupo ? `, grupo ${g.grupo}` : '';
+      const litotipo = g.litotipo ? `, litotipo: ${g.litotipo}` : '';
+      lines.push(`  - ${g.nome_unidade || g.nome}${pct}, era ${g.era || '?'}${grupo}${litotipo}`);
+      if (g.descricao) lines.push(`    descrição: ${g.descricao}`);
+    });
+  }
+
+  // 7. ESTRUTURAS GEOLÓGICAS — falhas, lineamentos, afloramentos (críticos pra prospecção)
+  const ge = r?.geologia_estruturas || r?.['9.14_analises_adicionais']?.geologia || {};
+  if (ge?.linhas_falha?.length || ge?.falhas?.length) {
+    const falhas = ge.linhas_falha || ge.falhas || [];
+    lines.push(`\n## FALHAS / LINEAMENTOS ESTRUTURAIS`);
+    lines.push(`Total: ${falhas.length} estrutura(s)`);
+    falhas.slice(0, 20).forEach((f, i) => {
+      lines.push(`  - F${i+1}: classif=${f.classif || '?'}, forma=${f.forma || '?'}, sentido=${f.sentido || '?'}, mergulho est.=${f.estm_merg || '?'}`);
+    });
+  }
+  if (ge?.pontos?.length || ge?.afloramentos?.length) {
+    const pts = ge.pontos || ge.afloramentos || [];
+    lines.push(`\n## AFLORAMENTOS / PONTOS GEOLÓGICOS`);
+    lines.push(`Total: ${pts.length} ponto(s)`);
+    pts.slice(0, 15).forEach((p, i) => lines.push(`  - P${i+1}: tipo=${p.tipo || p.classif || '?'}, litologia=${p.litologia || p.rocha || '?'}`));
+  }
+  if (ge?.ocorrencias?.length || r?.mineracao?.ocorrencias?.length) {
+    const ocr = ge.ocorrencias || r.mineracao.ocorrencias || [];
+    lines.push(`\n## OCORRÊNCIAS MINERAIS REGIONAIS (CPRM)`);
+    ocr.slice(0, 15).forEach((o, i) => {
+      const subs = o.substancias || o.substancia || '?';
+      const rochas = o.rochas_hospedeiras || o.rocha_hospedeira || '?';
+      lines.push(`  - O${i+1}: substância(s)=${subs}, rocha(s) hospedeira(s)=${rochas}`);
+    });
+  }
+
+  // 8. SOLO — indicador de intemperismo / mineralização superficial
   if (r?.solo?.length) {
-    lines.push(`\n## SOLOS (EMBRAPA SiBCS)`);
+    lines.push(`\n## SOLOS (EMBRAPA SiBCS — indicadores pedogeoquímicos)`);
     r.solo.forEach(s => {
       const pct = s.percentual_sobreposicao != null ? ` (${fmt(s.percentual_sobreposicao)}%)` : '';
       lines.push(`  - ${s.nome}${pct}, sigla ${s.sigla || '?'}, relevo ${s.relevo || s.declividade || '?'}`);
     });
   }
 
-  // 7. Geologia
-  if (r?.geologia?.length) {
-    lines.push(`\n## GEOLOGIA`);
-    r.geologia.forEach(g => {
-      const pct = g.percentual_sobreposicao != null ? ` (${fmt(g.percentual_sobreposicao)}%)` : '';
-      lines.push(`  - ${g.nome_unidade || g.nome}${pct}, era ${g.era || '?'}, ${g.descricao || ''}`);
-    });
-  }
-
-  // 8. Hidrografia
+  // 8. HIDROGRAFIA & PADRÃO DE DRENAGEM — pista forte sobre litologia/controle estrutural
   if (r?.hidrografia) {
-    lines.push(`\n## HIDROGRAFIA`);
+    lines.push(`\n## HIDROGRAFIA / PADRÃO DE DRENAGEM`);
     const h = r.hidrografia;
     if (h.cursos_dagua_count != null) lines.push(`Cursos d'água: ${h.cursos_dagua_count}`);
-    if (h.padrao_drenagem?.total_cursos) lines.push(`Total cursos (padrão drenagem): ${h.padrao_drenagem.total_cursos}`);
-    if (h.padrao_drenagem?.ordem_maxima) lines.push(`Ordem máxima Strahler: ${h.padrao_drenagem.ordem_maxima}`);
+    if (h.padrao_drenagem) {
+      const pd = h.padrao_drenagem;
+      if (pd.padrao || pd.tipo) lines.push(`Padrão de drenagem identificado: **${pd.padrao || pd.tipo}**`);
+      if (pd.descricao) lines.push(`Interpretação geológica: ${pd.descricao}`);
+      if (pd.total_cursos) lines.push(`Total cursos analisados: ${pd.total_cursos}`);
+      if (pd.ordem_maxima) lines.push(`Ordem máxima Strahler: ${pd.ordem_maxima}`);
+    }
     if (h.massas_dagua_count != null) lines.push(`Massas d'água: ${h.massas_dagua_count}`);
   }
 
@@ -2963,6 +2997,20 @@ function _summarizeResultadosForIA(r) {
     if (a.declividade_pct_media != null) lines.push(`Declividade média: ${fmt(a.declividade_pct_media)}%`);
   }
 
+  // 10b. AQUÍFEROS — potencial hidrogeológico e indicador estratigráfico
+  const aq = r?.aquiferos || r?.['9.13b_aquiferos'];
+  if (aq) {
+    const poroso = aq.poroso || [];
+    const fraturado = aq.fraturado || [];
+    const carstico = aq.carstico || [];
+    if (poroso.length || fraturado.length || carstico.length) {
+      lines.push(`\n## AQUÍFEROS`);
+      if (poroso.length) lines.push(`Aquíferos POROSOS (${poroso.length}): ${poroso.map(a => a.nome || a.codigo).filter(Boolean).join(', ')}`);
+      if (fraturado.length) lines.push(`Aquíferos FRATURADOS (${fraturado.length}): ${fraturado.map(a => a.nome || a.codigo).filter(Boolean).join(', ')}`);
+      if (carstico.length) lines.push(`Aquíferos CÁRSTICOS (${carstico.length}): ${carstico.map(a => a.nome || a.codigo).filter(Boolean).join(', ')}`);
+    }
+  }
+
   // 11. UCs e Terras Indígenas
   if (r?.unidades_conservacao?.length) {
     lines.push(`\n## UCs SOBREPOSTAS\n${r.unidades_conservacao.map(u => `  - ${u.nome} (${u.categoria})`).join('\n')}`);
@@ -2971,11 +3019,23 @@ function _summarizeResultadosForIA(r) {
     lines.push(`\n## TERRAS INDÍGENAS\n${r.terras_indigenas.map(t => `  - ${t.terrai_nom || t.nome} (${t.fase_ti || ''})`).join('\n')}`);
   }
 
-  // 12. Mineração
+  // 12. REQUERIMENTOS MINERÁRIOS (ANM) — diagnóstico prospectivo
   if (r?.mineracao?.processos?.length) {
-    lines.push(`\n## MINERAÇÃO (ANM)`);
-    lines.push(`Processos minerários: ${r.mineracao.processos.length}`);
-    r.mineracao.processos.slice(0, 5).forEach(m => lines.push(`  - Proc. ${m.processo || m.numero}: ${m.substancia || '?'}, fase ${m.fase || '?'}`));
+    lines.push(`\n## REQUERIMENTOS / PROCESSOS MINERÁRIOS (ANM)`);
+    lines.push(`Total: ${r.mineracao.processos.length} processo(s) sobreposto(s) ou vizinho(s)`);
+    // Agrupa por substância para ver padrão regional
+    const porSubst = {};
+    r.mineracao.processos.forEach(m => {
+      const k = (m.substancia || m.substância || '?').toString();
+      porSubst[k] = (porSubst[k] || 0) + 1;
+    });
+    lines.push(`Substâncias requeridas (frequência):`);
+    Object.entries(porSubst).sort((a,b) => b[1]-a[1]).forEach(([sub, n]) => lines.push(`  - ${sub}: ${n} processo(s)`));
+    lines.push(`Top processos:`);
+    r.mineracao.processos.slice(0, 10).forEach(m => {
+      const titular = m.titular || m.nome_titular || '';
+      lines.push(`  - ${m.processo || m.numero}: ${m.substancia || '?'}, fase ${m.fase || '?'}${titular ? ` (titular: ${titular})` : ''}`);
+    });
   }
 
   // 13. Silos
@@ -3001,23 +3061,43 @@ app.post('/api/analise-ia', async (req, res) => {
     const dadosCompactos = _summarizeResultadosForIA(resultados);
     const t0 = Date.now();
 
-    const systemPrompt = `Você é um perito agrário ambiental brasileiro especializado em diagnóstico de propriedades rurais. Analise os dados georreferenciados fornecidos e produza um LAUDO TÉCNICO em português brasileiro, estruturado em seções com cabeçalhos markdown (##).
+    const systemPrompt = `Você é um GEÓLOGO BRASILEIRO especialista em PROSPECÇÃO MINERAL, com pós-graduação em geologia econômica e mais de 15 anos de experiência cruzando dados regionais (CPRM, ANM, IBGE, EMBRAPA) para identificar áreas favoráveis à mineralização. Analise os dados georreferenciados fornecidos sobre uma parcela rural brasileira e produza um LAUDO GEOLÓGICO E PROSPECTIVO em português brasileiro, estruturado em seções com cabeçalhos markdown (##).
 
 Cubra OBRIGATORIAMENTE estas seções (quando houver dados disponíveis):
-1. **Identificação Fundiária**: cruzamento SIGEF/SNCI/CAR, número de matrículas, sobreposições
-2. **Conformidade Ambiental**: avaliação do CAR vs Código Florestal (Lei 12.651/2012) — RL mínima por bioma, vegetação nativa, área consolidada, riscos de irregularidade
-3. **Histórico de Desmatamento**: análise PRODES (acumulado) e DETER (alertas recentes), trend
-4. **Riscos Ambientais e Restrições**: UCs, TIs, APPs, áreas de proteção
-5. **Caracterização Edafoclimática**: solo dominante, aptidão agrícola, declividade, pluviometria, altimetria
-6. **Recursos Hídricos**: cursos d'água, padrão de drenagem, disponibilidade hídrica
-7. **Geologia e Mineração**: unidades geológicas, processos minerários sobrepostos
-8. **Logística e Infraestrutura**: silos próximos (quando informado)
-9. **Recomendações Técnicas**: ações práticas para regularização, oportunidades, alertas legais
 
-Use linguagem técnica precisa mas acessível. Cite valores numéricos exatos. Fundamente recomendações em legislação brasileira (Código Florestal, CAR, Lei de Proteção da Vegetação Nativa, Resoluções CONAMA).
-NÃO inclua disclaimers genéricos ("este laudo é apenas informativo" etc.). Vá direto ao ponto.`;
+1. **Contexto Geológico Regional**: identifique grupos, formações, era geotectônica, ambiente deposicional. Cite litotipos dominantes e processos formadores (vulcanismo, sedimentação, metamorfismo).
 
-    const userPrompt = `Dados georreferenciados da propriedade rural:\n\n${dadosCompactos}\n\nProduza o laudo técnico completo.`;
+2. **Estruturas, Falhas e Lineamentos**: avalie controle tectônico. Falhas de empurrão, transcorrentes, normais, fraturamento — todos servem como condutos para fluidos hidrotermais e podem hospedar veios mineralizados (ouro, sulfetos polimetálicos). Cite direção predominante e relação com mineralizações regionais.
+
+3. **Pontos de Afloramento**: descreva o que cada afloramento revela (litologia exposta, alteração hidrotermal, indicadores de mineralização — gossan, silicificação, sericitização).
+
+4. **Padrão de Drenagem como Indicador Litoestrutural**: interprete o padrão (dendrítico = rocha homogênea; retangular/treliçado = controle por falhas; radial = domo/intrusão; anelar = caldeira ou diápiro). Padrões anômalos indicam estruturas profundas ainda não mapeadas.
+
+5. **Assinatura Pedológica e Geoquímica**: solos como mapa de produto de intemperismo. Lateritas → bauxita/ferro/manganês/níquel; latossolos vermelhos → ferro residual; podzólicos → mobilização de elementos solúveis. Avalie a "vocação geoquímica" do solo.
+
+6. **Hidrogeologia (Aquíferos)**: aquíferos fraturados sugerem controle estrutural com potencial mineralizador; cársticos indicam carbonatos com possibilidade de Zn-Pb tipo MVT; porosos arenitos podem hospedar urânio.
+
+7. **Topografia e Geomorfologia**: avalie variação de cota, declividade, formas de relevo (cristas, escarpas) como pistas de litologias resistentes / falhamento / dobramento.
+
+8. **Requerimentos Minerários (ANM) e Histórico Regional**: examine processos minerários sobrepostos OU vizinhos como evidência indireta de mineralização. Frequência de cada substância indica TIPOS de depósito ativos na região. Ocorrências CPRM corroboram modelo.
+
+9. **Modelo Conceitual de Prospecção (MCP)**: com base no cruzamento de TODAS as evidências acima, proponha qual TIPO DE DEPÓSITO é provável aqui (orogenic gold, VMS, IOCG, MVT, BIF, placer aluvionar, laterítico, kimberlítico, IGRP, granito-relacionado, etc.). Cite analogias com depósitos brasileiros conhecidos (Carajás, Quadrilátero Ferrífero, Crixás, Bom Futuro, etc.).
+
+10. **Substâncias Minerais Prováveis (ranking)**: liste em ORDEM DE PROBABILIDADE 3 a 5 substâncias mais prováveis na parcela, com a evidência que sustenta cada uma. Ex: "Ouro (alta) — falhas transcorrentes NE-SW em greenstone arqueano + processos ANM vizinhos de Au".
+
+11. **Alvos de Investigação e Próximas Etapas**: recomende ações práticas:
+   - **Geoquímica de solo**: malha de amostragem (espaçamento, profundidade, elementos analíticos)
+   - **Geofísica**: magnetometria, gamaespectrometria, IP/resistividade — qual técnica indicada pra qual alvo
+   - **Mapeamento de detalhe**: escala 1:25.000 ou 1:10.000, focos prioritários
+   - **Sondagem**: alvos preliminares (se houver justificativa)
+   - **Verificação cartorária ANM**: requerimento de área livre, oposição de terceiros
+
+Use linguagem técnica de geólogo prospector. Cite valores numéricos exatos. Fundamente em literatura clássica (Robb, Misra, Pirajno, Dardenne & Schobbenhaus, Bizzi et al. 2003). Use terminologia da CPRM.
+NÃO inclua disclaimers genéricos ("este laudo é apenas informativo" etc.). Vá direto ao ponto técnico. Se faltar dado crítico (ex: sem análise geoquímica), declare a lacuna e diga qual seria o próximo passo para resolvê-la.
+
+Seja CAUTELOSO mas ASSERTIVO: indique probabilidades (alta/média/baixa) com base nas evidências, mas NÃO afirme presença de depósito sem dados confirmatórios diretos (furos/análises). O laudo é PROSPECTIVO — orienta investigação, não garante reserva.`;
+
+    const userPrompt = `Dados georreferenciados da parcela rural brasileira para análise prospectiva:\n\n${dadosCompactos}\n\nProduza o laudo geológico e prospectivo completo, com modelo conceitual de prospecção e ranking de substâncias minerais prováveis.`;
 
     const msg = await client.messages.create({
       model: 'claude-sonnet-4-5',
