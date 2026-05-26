@@ -51,6 +51,113 @@ function _cacheSet(key, data) {
 
 
 // --- Startup: indices GIST para queries espaciais ---
+async function ensureLogisticaTable() {
+  try {
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS infra`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS infra.terminais_logisticos (
+        id SERIAL PRIMARY KEY,
+        nome TEXT NOT NULL,
+        tipo TEXT NOT NULL CHECK (tipo IN ('porto_maritimo', 'porto_fluvial', 'porto_seco', 'terminal_ferroviario')),
+        municipio TEXT,
+        uf TEXT,
+        latitude DOUBLE PRECISION NOT NULL,
+        longitude DOUBLE PRECISION NOT NULL,
+        geom geometry(Point, 4674) GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(longitude, latitude), 4674)) STORED,
+        UNIQUE (nome, tipo)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_terminais_geom ON infra.terminais_logisticos USING GIST (geom)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_terminais_tipo ON infra.terminais_logisticos (tipo)`);
+    // Seed idempotente (ON CONFLICT DO NOTHING)
+    const seedSql = `
+      INSERT INTO infra.terminais_logisticos (nome, tipo, municipio, uf, latitude, longitude)
+      VALUES
+-- Portos Marítimos
+('Porto de Santos', 'porto_maritimo', 'Santos', 'SP', -23.9608, -46.3331),
+('Porto de Paranaguá', 'porto_maritimo', 'Paranaguá', 'PR', -25.5163, -48.5224),
+('Porto de Itaqui', 'porto_maritimo', 'São Luís', 'MA', -2.5757, -44.3635),
+('Porto de Vitória', 'porto_maritimo', 'Vitória', 'ES', -20.3194, -40.3128),
+('Porto de Tubarão', 'porto_maritimo', 'Vitória', 'ES', -20.2986, -40.2447),
+('Porto de Rio Grande', 'porto_maritimo', 'Rio Grande', 'RS', -32.0356, -52.0986),
+('Porto de Itapoá', 'porto_maritimo', 'Itapoá', 'SC', -26.1108, -48.6178),
+('Porto de Itajaí', 'porto_maritimo', 'Itajaí', 'SC', -26.9078, -48.6614),
+('Porto de São Francisco do Sul', 'porto_maritimo', 'São Francisco do Sul', 'SC', -26.2435, -48.6383),
+('Porto de Suape', 'porto_maritimo', 'Ipojuca', 'PE', -8.3939, -34.9627),
+('Porto do Pecém', 'porto_maritimo', 'São Gonçalo do Amarante', 'CE', -3.5475, -38.8089),
+('Porto de Fortaleza/Mucuripe', 'porto_maritimo', 'Fortaleza', 'CE', -3.7062, -38.4763),
+('Porto de Salvador', 'porto_maritimo', 'Salvador', 'BA', -12.9655, -38.5117),
+('Porto de Aratu', 'porto_maritimo', 'Candeias', 'BA', -12.82, -38.53),
+('Porto de Itaguaí (Sepetiba)', 'porto_maritimo', 'Itaguaí', 'RJ', -22.9389, -43.8350),
+('Porto do Rio de Janeiro', 'porto_maritimo', 'Rio de Janeiro', 'RJ', -22.8995, -43.1872),
+('Porto de Natal', 'porto_maritimo', 'Natal', 'RN', -5.7649, -35.2056),
+('Porto de Cabedelo', 'porto_maritimo', 'Cabedelo', 'PB', -6.9683, -34.8294),
+('Porto de Maceió', 'porto_maritimo', 'Maceió', 'AL', -9.6712, -35.7240),
+('Porto de São Sebastião', 'porto_maritimo', 'São Sebastião', 'SP', -23.8094, -45.4031),
+-- Portos Fluviais
+('Porto de Manaus', 'porto_fluvial', 'Manaus', 'AM', -3.1322, -60.0153),
+('Porto de Santarém', 'porto_fluvial', 'Santarém', 'PA', -2.4378, -54.7081),
+('Terminal Hidroviário de Itacoatiara', 'porto_fluvial', 'Itacoatiara', 'AM', -3.1419, -58.4444),
+('Porto de Vila do Conde', 'porto_fluvial', 'Barcarena', 'PA', -1.5444, -48.6500),
+('Terminal Miritituba (TUP Cargill)', 'porto_fluvial', 'Itaituba', 'PA', -4.2789, -55.9794),
+('Porto de Cáceres', 'porto_fluvial', 'Cáceres', 'MT', -16.0656, -57.6839),
+('Porto de Ladário', 'porto_fluvial', 'Ladário', 'MS', -19.0078, -57.6056),
+('Porto Velho', 'porto_fluvial', 'Porto Velho', 'RO', -8.7619, -63.9039),
+('Porto de Estrela', 'porto_fluvial', 'Estrela', 'RS', -29.5006, -51.9647),
+('Porto de Pirapora', 'porto_fluvial', 'Pirapora', 'MG', -17.3447, -44.9436),
+('Porto de Belém', 'porto_fluvial', 'Belém', 'PA', -1.4558, -48.5044),
+('Porto de Macapá', 'porto_fluvial', 'Macapá', 'AP', -0.0356, -51.0500),
+('Porto de Trombetas (Porto Trombetas)', 'porto_fluvial', 'Oriximiná', 'PA', -1.4628, -56.3897),
+('Porto de Marabá', 'porto_fluvial', 'Marabá', 'PA', -5.3683, -49.1175),
+-- Portos Secos / EADIs / Recintos Alfandegados
+('EADI Salvador', 'porto_seco', 'Salvador', 'BA', -12.97, -38.5),
+('EADI São Bernardo do Campo', 'porto_seco', 'São Bernardo do Campo', 'SP', -23.6914, -46.5650),
+('EADI Anápolis', 'porto_seco', 'Anápolis', 'GO', -16.3267, -48.9531),
+('EADI Vitória da Conquista', 'porto_seco', 'Vitória da Conquista', 'BA', -14.8619, -40.8444),
+('EADI Uberlândia', 'porto_seco', 'Uberlândia', 'MG', -18.9189, -48.2767),
+('EADI Caxias do Sul', 'porto_seco', 'Caxias do Sul', 'RS', -29.1678, -51.1789),
+('EADI Cuiabá', 'porto_seco', 'Cuiabá', 'MT', -15.5989, -56.0950),
+('EADI Foz do Iguaçu', 'porto_seco', 'Foz do Iguaçu', 'PR', -25.5168, -54.5853),
+('EADI Cascavel', 'porto_seco', 'Cascavel', 'PR', -24.9550, -53.4555),
+('EADI Várzea Grande', 'porto_seco', 'Várzea Grande', 'MT', -15.6467, -56.1325),
+('EADI Barueri', 'porto_seco', 'Barueri', 'SP', -23.5111, -46.8761),
+('EADI Itaboraí', 'porto_seco', 'Itaboraí', 'RJ', -22.7456, -42.8597),
+('EADI Suzano', 'porto_seco', 'Suzano', 'SP', -23.5425, -46.3106),
+('EADI Maringá', 'porto_seco', 'Maringá', 'PR', -23.4205, -51.9331),
+('EADI Sorocaba', 'porto_seco', 'Sorocaba', 'SP', -23.5018, -47.4581),
+('EADI Resende', 'porto_seco', 'Resende', 'RJ', -22.4683, -44.4471),
+('EADI Manaus', 'porto_seco', 'Manaus', 'AM', -3.0936, -59.9986),
+-- Terminais Ferroviários
+('Terminal Ferroviário Rondonópolis (Rumo)', 'terminal_ferroviario', 'Rondonópolis', 'MT', -16.4708, -54.6394),
+('Terminal Alto Taquari (Rumo)', 'terminal_ferroviario', 'Alto Taquari', 'MT', -17.8333, -53.2833),
+('Terminal Itiquira', 'terminal_ferroviario', 'Itiquira', 'MT', -17.2117, -54.1481),
+('Terminal Aparecida do Taboado', 'terminal_ferroviario', 'Aparecida do Taboado', 'MS', -20.0867, -51.0917),
+('Terminal Pederneiras (VLI)', 'terminal_ferroviario', 'Pederneiras', 'SP', -22.3514, -48.7747),
+('Terminal Itirapina', 'terminal_ferroviario', 'Itirapina', 'SP', -22.2542, -47.8233),
+('Terminal Estrela d''Oeste', 'terminal_ferroviario', 'Estrela d''Oeste', 'SP', -20.2872, -50.4083),
+('Terminal Bauru', 'terminal_ferroviario', 'Bauru', 'SP', -22.3147, -49.0606),
+('Terminal Anápolis (VLI)', 'terminal_ferroviario', 'Anápolis', 'GO', -16.3267, -48.9531),
+('Terminal Catalão', 'terminal_ferroviario', 'Catalão', 'GO', -18.1714, -47.9461),
+('Terminal Uberlândia', 'terminal_ferroviario', 'Uberlândia', 'MG', -18.9189, -48.2767),
+('Terminal Araguari', 'terminal_ferroviario', 'Araguari', 'MG', -18.6457, -48.1869),
+('Terminal Patrocínio', 'terminal_ferroviario', 'Patrocínio', 'MG', -18.9438, -46.9925),
+('Terminal Porto Nacional', 'terminal_ferroviario', 'Porto Nacional', 'TO', -10.7058, -48.4178),
+('Terminal Açailândia (Carajás)', 'terminal_ferroviario', 'Açailândia', 'MA', -4.9469, -47.5083),
+('Terminal Cariri', 'terminal_ferroviario', 'Crato', 'CE', -7.2298, -39.4128),
+('Terminal Paulínia (VLI)', 'terminal_ferroviario', 'Paulínia', 'SP', -22.7614, -47.1542),
+('Terminal Lucas do Rio Verde (Ferrogrão proj.)', 'terminal_ferroviario', 'Lucas do Rio Verde', 'MT', -13.0436, -55.9136),
+('Terminal Sorriso (Ferrogrão proj.)', 'terminal_ferroviario', 'Sorriso', 'MT', -12.5481, -55.7167),
+('Terminal Sinop (Ferrogrão proj.)', 'terminal_ferroviario', 'Sinop', 'MT', -11.8642, -55.5103)
+      ON CONFLICT (nome, tipo) DO NOTHING
+    `;
+    const seedRes = await pool.query(seedSql);
+    const total = (await pool.query(`SELECT COUNT(*) FROM infra.terminais_logisticos`)).rows[0].count;
+    console.log(`[startup] terminais logisticos OK — ${total} registros (seed inseriu ${seedRes.rowCount} novos)`);
+  } catch (err) {
+    console.error('[startup] ensureLogisticaTable err:', err.message);
+  }
+}
+
 async function ensureGistIndexes() {
   const client = await pool.connect();
   try {
@@ -2623,6 +2730,7 @@ app.post('/api/analises', async (req, res) => {
         veg_nativa_proposta_ha:   0,
       },
       silos: analyses['9.13e_silos'] || null,
+      logistica: analyses['9.13f_logistica'] || null,
       prodes_deter: {
         prodes:                   analyses['9.13c_prodes_deter']?.prodes || [],
         deter:                    analyses['9.13c_prodes_deter']?.deter || [],
@@ -3036,6 +3144,39 @@ function _summarizeResultadosForIA(r) {
       const titular = m.titular || m.nome_titular || '';
       lines.push(`  - ${m.processo || m.numero}: ${m.substancia || '?'}, fase ${m.fase || '?'}${titular ? ` (titular: ${titular})` : ''}`);
     });
+  }
+
+  // 12b. LOGÍSTICA — cidades, portos, terminais ferroviários, portos secos
+  const lg = r?.logistica;
+  if (lg) {
+    const cid = lg.cidades_proximas || [];
+    const pm = lg.portos_maritimos || [];
+    const pf = lg.portos_fluviais || [];
+    const ps = lg.portos_secos || [];
+    const tf = lg.terminais_ferroviarios || [];
+    if (cid.length || pm.length || pf.length || ps.length || tf.length) {
+      lines.push(`\n## LOGÍSTICA E ESCOAMENTO`);
+      if (cid.length) {
+        lines.push(`Principais cidades próximas (top 10, distância geodésica):`);
+        cid.slice(0, 10).forEach(c => lines.push(`  - ${c.nome}/${c.uf}: ${fmt(c.distancia_km, 1)} km`));
+      }
+      if (pm.length) {
+        lines.push(`Portos marítimos próximos (top 5):`);
+        pm.forEach(p => lines.push(`  - ${p.nome} (${p.municipio}/${p.uf}): ${fmt(p.distancia_km, 1)} km`));
+      }
+      if (pf.length) {
+        lines.push(`Portos fluviais próximos (top 5):`);
+        pf.forEach(p => lines.push(`  - ${p.nome} (${p.municipio}/${p.uf}): ${fmt(p.distancia_km, 1)} km`));
+      }
+      if (ps.length) {
+        lines.push(`Portos secos / EADIs próximos (top 5):`);
+        ps.forEach(p => lines.push(`  - ${p.nome} (${p.municipio}/${p.uf}): ${fmt(p.distancia_km, 1)} km`));
+      }
+      if (tf.length) {
+        lines.push(`Terminais ferroviários próximos (top 5):`);
+        tf.forEach(t => lines.push(`  - ${t.nome} (${t.municipio}/${t.uf}): ${fmt(t.distancia_km, 1)} km`));
+      }
+    }
   }
 
   // 13. Silos
@@ -3711,6 +3852,7 @@ app.use((err, req, res, next) => {
 });
 
 ensureGistIndexes().catch(console.error);
+ensureLogisticaTable().catch(console.error);
 
 // Start server
 app.listen(port, () => {
