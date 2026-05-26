@@ -2451,7 +2451,7 @@ app.post('/api/analises', async (req, res) => {
       const _pma = (analyses?.['9.11_pluviometria']?.media_anual_30anos ?? analyses?.['9.11_pluviometria']?.resumo?.media_anual_mm ?? 1200);
       const _solos = analyses?.['9.4_solo']?.data || [];
       const _solosNomes = _solos.map(s => (s.nome || '').toUpperCase());
-      const _bioma = analyses?.['9.3_bioma']?.data?.[0]?.nome || '';
+      const _bioma = analyses?.['9.4_bioma']?.data?.[0]?.nome || '';
       const _bacias = analyses?.['9.10_hidrografia']?.bacias || [];
       const _cursos = analyses?.['9.10_hidrografia']?.cursos_agua_count || 0;
       const _padraoDren = analyses?.['9.10_hidrografia']?.padrao_drenagem || {};
@@ -2703,15 +2703,51 @@ app.post('/api/analises', async (req, res) => {
     {
       const ufAmazoniaLegal = new Set(['AC','AP','AM','MA','MT','PA','RO','RR','TO']);
       const uf = (municipio.uf || '').toUpperCase();
-      const wfsCounts = analyses['9.13c_prodes_deter']?.debug?.wfs_counts || {};
-      // Detecta bioma dominante: se PRODES Amazon retornou features → Amazônia, senão Cerrado/Pantanal/etc
+      const inAL = ufAmazoniaLegal.has(uf);
+
+      // Detecta bioma(s) usando schema bioma.bioma_250 (oficial IBGE)
+      // analyses['9.4_bioma'].data: [{nome, percentual}], ordenado desc por percentual
+      const biomasDataRaw = analyses?.['9.4_bioma']?.data || [];
+      const biomasData = biomasDataRaw
+        .map(b => ({ nome: (b.nome || '').toUpperCase(), percentual: Number(b.percentual || 0) }))
+        .filter(b => b.nome && b.percentual > 0.5); // ignora ruído < 0.5%
+
+      // RL % por bioma conforme Lei 12.651/2012
+      const rlPctPorBioma = (nome) => {
+        const n = (nome || '').toUpperCase();
+        if (n.includes('AMAZ')) return inAL ? 0.80 : 0.20;
+        if (n.includes('CERR')) return inAL ? 0.35 : 0.20;
+        return 0.20; // Pantanal, Mata Atlântica, Caatinga, Pampa, outros
+      };
+
+      // Bioma dominante (compatibilidade legacy) e RL proporcional (multi-bioma)
       let bioma = 'OUTROS', rlMinPct = 0.20;
-      if ((wfsCounts.prodes_amazon || 0) > 0) { bioma = 'AMAZÔNIA'; rlMinPct = ufAmazoniaLegal.has(uf) ? 0.80 : 0.20; }
-      else if ((wfsCounts.prodes_cerrado || 0) > 0) { bioma = 'CERRADO'; rlMinPct = ufAmazoniaLegal.has(uf) ? 0.35 : 0.20; }
-      else if ((wfsCounts.prodes_pantanal || 0) > 0) { bioma = 'PANTANAL'; rlMinPct = 0.20; }
-      else if ((wfsCounts.prodes_mata_atlantica || 0) > 0) { bioma = 'MATA ATLÂNTICA'; rlMinPct = 0.20; }
-      else if ((wfsCounts.prodes_caatinga || 0) > 0) { bioma = 'CAATINGA'; rlMinPct = 0.20; }
-      else if ((wfsCounts.prodes_pampa || 0) > 0) { bioma = 'PAMPA'; rlMinPct = 0.20; }
+      let rlMinPctPonderado = 0.20;
+      const biomasDetalhe = [];
+      if (biomasData.length) {
+        bioma = biomasData[0].nome;
+        rlMinPct = rlPctPorBioma(bioma);
+        // Cálculo ponderado: soma(pct_bioma × rl_pct_bioma) / 100
+        let pctTotal = 0, somaPonderada = 0;
+        for (const b of biomasData) {
+          const pct = rlPctPorBioma(b.nome);
+          biomasDetalhe.push({ nome: b.nome, cobertura_pct: b.percentual, rl_pct: pct });
+          somaPonderada += b.percentual * pct;
+          pctTotal += b.percentual;
+        }
+        if (pctTotal > 0) rlMinPctPonderado = somaPonderada / pctTotal;
+      } else {
+        // Fallback antigo (PRODES counts) se schema bioma indisponível
+        const wfsCounts = analyses['9.13c_prodes_deter']?.debug?.wfs_counts || {};
+        if ((wfsCounts.prodes_amazon || 0) > 0) { bioma = 'AMAZÔNIA'; rlMinPct = inAL ? 0.80 : 0.20; }
+        else if ((wfsCounts.prodes_cerrado || 0) > 0) { bioma = 'CERRADO'; rlMinPct = inAL ? 0.35 : 0.20; }
+        else if ((wfsCounts.prodes_pantanal || 0) > 0) { bioma = 'PANTANAL'; rlMinPct = 0.20; }
+        else if ((wfsCounts.prodes_mata_atlantica || 0) > 0) { bioma = 'MATA ATLÂNTICA'; rlMinPct = 0.20; }
+        else if ((wfsCounts.prodes_caatinga || 0) > 0) { bioma = 'CAATINGA'; rlMinPct = 0.20; }
+        else if ((wfsCounts.prodes_pampa || 0) > 0) { bioma = 'PAMPA'; rlMinPct = 0.20; }
+        rlMinPctPonderado = rlMinPct;
+        biomasDetalhe.push({ nome: bioma, cobertura_pct: 100, rl_pct: rlMinPct });
+      }
 
       const areaTotal = parseFloat(municipio.area_hectares) || 0;
       const carImoveis = analyses['9.13_car']?.area_imovel || [];
@@ -2728,8 +2764,13 @@ app.post('/api/analises', async (req, res) => {
         .filter(d => d.view_date && new Date(d.view_date) >= cutoff24m);
       const deterRecenteHa = deterRecente.reduce((s, d) => s + (d.area_ha || 0), 0);
 
-      const rlMinHa = areaRef * rlMinPct;
+      const rlMinHa = areaRef * rlMinPctPonderado;
       const rlAtende = rlDeclarada >= rlMinHa;
+      // Detalhamento por bioma (área absoluta e RL mínima por porção)
+      for (const b of biomasDetalhe) {
+        b.area_ha = parseFloat((areaRef * (b.cobertura_pct / 100)).toFixed(2));
+        b.rl_minima_ha = parseFloat((b.area_ha * b.rl_pct).toFixed(2));
+      }
       // Discrepância: se PRODES > Área Consolidada declarada, o CAR declarou MENOS área desmatada que o real
       const discrepanciaConsolidada = prodesTotal > 0 && areaConsolidada > 0 && prodesTotal > areaConsolidada * 1.1;
       // Discrepância: Veg Nativa CAR + Área Consolidada CAR ≠ Área Total (com 5% tolerância)
@@ -2781,7 +2822,9 @@ app.post('/api/analises', async (req, res) => {
         bioma_uf: uf,
         amazonia_legal: ufAmazoniaLegal.has(uf),
         rl_minima_pct: rlMinPct,
+        rl_minima_pct_ponderado: parseFloat(rlMinPctPonderado.toFixed(4)),
         rl_minima_ha: parseFloat(rlMinHa.toFixed(2)),
+        biomas_detalhe: biomasDetalhe,
         rl_declarada_ha: parseFloat(rlDeclarada.toFixed(2)),
         rl_atende_minimo: rlAtende,
         veg_nativa_declarada_ha: parseFloat(vegNativa.toFixed(2)),
@@ -3606,6 +3649,12 @@ Cubra OBRIGATORIAMENTE estas seções (quando houver dados disponíveis):
    - **Verificação cartorária ANM**: requerimento de área livre, oposição de terceiros
 
 Use linguagem técnica de geólogo prospector. Cite valores numéricos exatos. Fundamente em literatura clássica (Robb, Misra, Pirajno, Dardenne & Schobbenhaus, Bizzi et al. 2003). Use terminologia da CPRM.
+
+REGRAS CRÍTICAS DE FIDELIDADE AOS DADOS:
+- A BACIA HIDROGRÁFICA da parcela é EXATAMENTE a que aparece nos dados (campo HIDROGRAFIA / bacias). NÃO invente outra bacia. Se os dados indicam Bacia Amazônica (Rio Xingu, Rio Tapajós, Rio Madeira, Rio Negro, etc.), use Bacia Amazônica — NÃO escreva Bacia do Paraná ou outra. Se indicam Cerrado/Bacia do São Francisco, use São Francisco.
+- O(S) BIOMA(S) são EXATAMENTE os listados no campo BIOMA com seus percentuais. Se a parcela está em 2 biomas (ex: 60% Amazônia + 40% Cerrado), discuta a TRANSIÇÃO ecotonal e o que isso implica para mineralização (faixa de transição muitas vezes coincide com limite geotectônico cráton-faixa móvel).
+- O ESTADO/UF é o do campo MUNICÍPIO. Cite analogias com depósitos do MESMO estado quando disponível.
+
 NÃO inclua disclaimers genéricos ("este laudo é apenas informativo" etc.). Vá direto ao ponto técnico. Se faltar dado crítico (ex: sem análise geoquímica), declare a lacuna e diga qual seria o próximo passo para resolvê-la.
 
 Seja CAUTELOSO mas ASSERTIVO: indique probabilidades (alta/média/baixa) com base nas evidências, mas NÃO afirme presença de depósito sem dados confirmatórios diretos (furos/análises). O laudo é PROSPECTIVO — orienta investigação, não garante reserva.`;
