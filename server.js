@@ -2060,7 +2060,7 @@ app.post('/api/analises', async (req, res) => {
           ST_Y(pc.geom)::float8 AS lat,
           pc.val::float8 AS m
         FROM altitude_br.altitude_raster r,
-             LATERAL ST_PixelAsCentroids(ST_Clip(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)), 1) pc
+             LATERAL ST_PixelAsPoints(ST_Clip(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)), 1) pc
         WHERE ST_Intersects(r.rast, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))
           AND pc.val IS NOT NULL
         LIMIT 30000
