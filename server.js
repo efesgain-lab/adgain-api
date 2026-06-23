@@ -2650,14 +2650,14 @@ app.post('/api/analises', async (req, res) => {
         // Roda WFS pra todos biomas em paralelo (cada um com timeout próprio)
         const t0 = Date.now();
         const [prodesAmz, prodesCer, prodesMA, prodesCa, prodesPampa, prodesPant, deterAmz, deterCer] = await Promise.all([
-          fetchWFS('prodes-amazon-nb:yearly_deforestation_biome', bbox, 15000),
-          fetchWFS('prodes-cerrado-nb:yearly_deforestation', bbox, 15000),
-          fetchWFS('prodes-mata-atlantica-nb:yearly_deforestation', bbox, 15000),
-          fetchWFS('prodes-caatinga-nb:yearly_deforestation', bbox, 15000),
-          fetchWFS('prodes-pampa-nb:yearly_deforestation', bbox, 15000),
-          fetchWFS('prodes-pantanal-nb:yearly_deforestation', bbox, 15000),
-          fetchWFS('deter-amz:deter_amz', bbox, 15000),
-          fetchWFS('deter-cerrado-nb:deter_cerrado', bbox, 15000),
+          fetchWFS('prodes-amazon-nb:yearly_deforestation_biome', bbox, 20000),
+          fetchWFS('prodes-cerrado-nb:yearly_deforestation', bbox, 20000),
+          fetchWFS('prodes-mata-atlantica-nb:yearly_deforestation', bbox, 20000),
+          fetchWFS('prodes-caatinga-nb:yearly_deforestation', bbox, 20000),
+          fetchWFS('prodes-pampa-nb:yearly_deforestation', bbox, 20000),
+          fetchWFS('prodes-pantanal-nb:yearly_deforestation', bbox, 20000),
+          fetchWFS('deter-amz:deter_amz', bbox, 20000),
+          fetchWFS('deter-cerrado-nb:deter_cerrado', bbox, 20000),
         ]);
         const elapsed = Date.now() - t0;
         const wfsCounts = {
@@ -2865,7 +2865,7 @@ app.post('/api/analises', async (req, res) => {
     // Helper para normalizar SRID e retornar geom_json simplificado (linhas)
     const geomLinhaJson = `ST_AsGeoJSON(ST_SimplifyPreserveTopology(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 0.001))`;
     const geomPtoJson   = `ST_AsGeoJSON(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END)`;
-    const geoIntersect  = `ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
+    const geoIntersect  = `ST_Intersects(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
 
     // ── PARALELIZADO: 5 queries de estruturas geológicas (independentes) ──
     console.time('[par] estruturas-geol');
@@ -2877,7 +2877,7 @@ app.post('/api/analises', async (req, res) => {
       geolLinhaFraturaResult,
     ] = await Promise.all([
       safeQuery(`SELECT cd_fcim, ds_afl1, nm_unidade as nome, tipo_pto as tipo, fonte, ${geomPtoJson} as geom_json FROM geologia_litologia.geol_ponto WHERE ${geoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras, ST_AsGeoJSON(geom) as geom_json FROM geologia_litologia."ocorrências_br" WHERE ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`, [geojsonStr]),
+      safeQuery(`SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras, ST_AsGeoJSON(geom) as geom_json FROM geologia_litologia."ocorrências_br" WHERE ST_Intersects(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`, [geojsonStr]),
       safeQuery(`SELECT cd_fcim, classif, caract_eix, caime_eix, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_dobra WHERE ${geoIntersect}`, [geojsonStr]),
       safeQuery(`SELECT cd_fcim, classif, forma, estm_merg, sentido, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_falha WHERE ${geoIntersect}`, [geojsonStr]),
       safeQuery(`SELECT cd_fcim, classif, forma, mergulho, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_fratura WHERE ${geoIntersect}`, [geojsonStr]),
@@ -2895,8 +2895,8 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.5_geologia'].fraturas = geolLinhaFraturaResult.rows;
 
     // Tectônicas — todas as tabelas do schema tectonic_map com geom_json
-    const tectonicGeoFilter    = `ST_DWithin(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 1.0)`;
-    const tectonicGeoIntersect = `ST_Intersects(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,${SRID}) ELSE geom END, ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
+    const tectonicGeoFilter    = `ST_DWithin(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674), 1.0)`;
+    const tectonicGeoIntersect = `ST_Intersects(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
     const tecGeomLinha = `ST_AsGeoJSON(ST_SimplifyPreserveTopology(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 0.01))`;
     const tecGeomPto   = `ST_AsGeoJSON(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END)`;
 
