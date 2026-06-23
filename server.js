@@ -217,7 +217,7 @@ async function ensureRodoviasTable() {
 async function ensureGistIndexes() {
   const client = await pool.connect();
   try {
-    const schemas = ['public', 'incra', 'car', 'anm'];
+    const schemas = ['public', 'incra', 'car', 'anm', 'tectonic_map', 'geologia_litologia'];
     const gc = await client.query(
       "SELECT f_table_schema s, f_table_name t, f_geometry_column c " +
       "FROM geometry_columns " +
@@ -225,11 +225,12 @@ async function ensureGistIndexes() {
       [schemas, '%RASTER%']
     );
     for (const row of gc.rows) {
-      const tbl = row.s === 'public' ? row.t : (row.s + '.' + row.t);
+      // Identificadores entre aspas — cobre nomes com acento (ex: ocorrências_br)
+      const tbl = row.s === 'public' ? `"${row.t}"` : (`"${row.s}"."${row.t}"`);
       const idx = ('gist_' + row.s + '_' + row.t + '_' + row.c).substring(0, 63);
       try {
         await client.query(
-          "CREATE INDEX IF NOT EXISTS " + idx + " ON " + tbl + " USING GIST (" + row.c + ")"
+          `CREATE INDEX IF NOT EXISTS "${idx}" ON ${tbl} USING GIST ("${row.c}")`
         );
       } catch (ie) { /* tabela pode nao existir ainda */ }
     }
@@ -397,6 +398,52 @@ async function fetchWFS(typeName, bbox, timeoutMs = 8000) {
     clearTimeout(tid);
     return { features: [], error: e.message || 'fetch err' };
   }
+}
+
+/* =========================================================================
+ * SRID cache + helpers de filtro espacial (PERFORMANCE)
+ * Tabelas de geologia/tectônica têm SRID misto (4674/4326). Filtrar com
+ * ST_Transform(geom,...) por linha desativa o índice GIST → full scan lento.
+ * Aqui montamos o filtro com `geom && <parcela no SRID da coluna>` (constante),
+ * que USA o índice, + ST_Intersects no mesmo SRID. SRID por tabela é lido 1x
+ * de geometry_columns e cacheado.
+ * ======================================================================= */
+const _sridCache = new Map(); // 'schema.table' -> srid (int)
+async function loadSridCache() {
+  try {
+    const r = await pool.query(
+      `SELECT f_table_schema||'.'||f_table_name AS t, srid
+       FROM geometry_columns
+       WHERE f_table_schema IN ('tectonic_map','geologia_litologia')`
+    );
+    for (const row of r.rows) _sridCache.set(row.t, Number(row.srid));
+    console.log('[srid-cache] carregado:', _sridCache.size, 'tabelas');
+  } catch (e) {
+    console.warn('[srid-cache] falhou:', e.message);
+  }
+}
+/** Filtro ST_Intersects index-friendly p/ uma tabela (usa SRID cacheado). */
+function geoWhereFor(tableFQN, paramIdx = 1) {
+  const srid = _sridCache.get(tableFQN);
+  const base = `ST_SetSRID(ST_GeomFromGeoJSON($${paramIdx}::jsonb->'geometry'), 4674)`;
+  if (srid === 4674) return `geom && ${base} AND ST_Intersects(geom, ${base})`;
+  if (srid && srid !== 0) {
+    const p = `ST_Transform(${base}, ${srid})`;
+    return `geom && ${p} AND ST_Intersects(geom, ${p})`;
+  }
+  // SRID desconhecido/0 → fallback correto (sem índice, mas nunca quebra)
+  return `ST_Intersects(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ${base})`;
+}
+/** Filtro ST_DWithin index-friendly (usa && ST_Expand p/ aproveitar o índice). */
+function geoDWithinFor(tableFQN, paramIdx = 1, dist = 1.0) {
+  const srid = _sridCache.get(tableFQN);
+  const base = `ST_SetSRID(ST_GeomFromGeoJSON($${paramIdx}::jsonb->'geometry'), 4674)`;
+  if (srid === 4674) return `geom && ST_Expand(${base}, ${dist}) AND ST_DWithin(geom, ${base}, ${dist})`;
+  if (srid && srid !== 0) {
+    const p = `ST_Transform(${base}, ${srid})`;
+    return `geom && ST_Expand(${p}, ${dist}) AND ST_DWithin(geom, ${p}, ${dist})`;
+  }
+  return `ST_DWithin(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ${base}, ${dist})`;
 }
 
 /**
@@ -2867,6 +2914,8 @@ app.post('/api/analises', async (req, res) => {
     const geomPtoJson   = `ST_AsGeoJSON(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END)`;
     const geoIntersect  = `ST_Intersects(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`;
 
+    // Garante SRID cache populado (perf: filtros usam índice GIST por tabela)
+    if (!_sridCache.size) await loadSridCache();
     // ── PARALELIZADO: 5 queries de estruturas geológicas (independentes) ──
     console.time('[par] estruturas-geol');
     const [
@@ -2876,11 +2925,11 @@ app.post('/api/analises', async (req, res) => {
       geolLinhaFalhaResult,
       geolLinhaFraturaResult,
     ] = await Promise.all([
-      safeQuery(`SELECT cd_fcim, ds_afl1, nm_unidade as nome, tipo_pto as tipo, fonte, ${geomPtoJson} as geom_json FROM geologia_litologia.geol_ponto WHERE ${geoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras, ST_AsGeoJSON(geom) as geom_json FROM geologia_litologia."ocorrências_br" WHERE ST_Intersects(ST_Transform(CASE WHEN ST_SRID(geom)=0 THEN ST_SetSRID(geom,4674) ELSE geom END, 4674), ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))`, [geojsonStr]),
-      safeQuery(`SELECT cd_fcim, classif, caract_eix, caime_eix, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_dobra WHERE ${geoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT cd_fcim, classif, forma, estm_merg, sentido, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_falha WHERE ${geoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT cd_fcim, classif, forma, mergulho, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_fratura WHERE ${geoIntersect}`, [geojsonStr]),
+      safeQuery(`SELECT cd_fcim, ds_afl1, nm_unidade as nome, tipo_pto as tipo, fonte, ${geomPtoJson} as geom_json FROM geologia_litologia.geol_ponto WHERE ${geoWhereFor('geologia_litologia.geol_ponto')}`, [geojsonStr]),
+      safeQuery(`SELECT "SUBSTANCIAS" as substancias, "ROCHAS_HOSPEDEIRAS" as rochas_hospedeiras, ST_AsGeoJSON(geom) as geom_json FROM geologia_litologia."ocorrências_br" WHERE ${geoWhereFor('geologia_litologia.ocorrências_br')}`, [geojsonStr]),
+      safeQuery(`SELECT cd_fcim, classif, caract_eix, caime_eix, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_dobra WHERE ${geoWhereFor('geologia_litologia.geol_linha_dobra')}`, [geojsonStr]),
+      safeQuery(`SELECT cd_fcim, classif, forma, estm_merg, sentido, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_falha WHERE ${geoWhereFor('geologia_litologia.geol_linha_falha')}`, [geojsonStr]),
+      safeQuery(`SELECT cd_fcim, classif, forma, mergulho, ${geomLinhaJson} as geom_json FROM geologia_litologia.geol_linha_fratura WHERE ${geoWhereFor('geologia_litologia.geol_linha_fratura')}`, [geojsonStr]),
     ]);
     console.timeEnd('[par] estruturas-geol');
     analyses['9.14_analises_adicionais'].geologia.pontos = geolPontoResult.rows;
@@ -2913,15 +2962,15 @@ app.post('/api/analises', async (req, res) => {
       paleozResult,
       sutureResult,
     ] = await Promise.all([
-      safeQuery(`SELECT id, feature, type as tipo FROM tectonic_map.plate_boundary WHERE ${tectonicGeoFilter}`, [geojsonStr]),
-      safeQuery(`SELECT id, type as tipo, name, ${tecGeomLinha} as geom_json FROM tectonic_map.continent_structure WHERE ${tectonicGeoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT id, type as tipo, ${tecGeomLinha} as geom_json FROM tectonic_map.craton_terranes_limits WHERE ${tectonicGeoFilter}`, [geojsonStr]),
-      safeQuery(`SELECT id, type as tipo, age, ${tecGeomLinha} as geom_json FROM tectonic_map.dykes WHERE ${tectonicGeoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT id, type as tipo, long_dec as longitude, lat_dec as latitude, ${tecGeomPto} as geom_json FROM tectonic_map.eclogites WHERE ${tectonicGeoFilter}`, [geojsonStr]),
-      safeQuery(`SELECT id, type as tipo, depth_base, ${tecGeomLinha} as geom_json FROM tectonic_map.isopachs WHERE ${tectonicGeoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT id, source, age, long_dec as longitude, lat_dec as latitude, ${tecGeomPto} as geom_json FROM tectonic_map.kimberlites WHERE ${tectonicGeoFilter}`, [geojsonStr]),
-      safeQuery(`SELECT id, type as tipo, ${tecGeomLinha} as geom_json FROM tectonic_map.paleoz_erosional_border WHERE ${tectonicGeoIntersect}`, [geojsonStr]),
-      safeQuery(`SELECT id, type as tipo, obs, ${tecGeomLinha} as geom_json FROM tectonic_map.suture_zones WHERE ${tectonicGeoIntersect}`, [geojsonStr]),
+      safeQuery(`SELECT id, feature, type as tipo FROM tectonic_map.plate_boundary WHERE ${geoDWithinFor('tectonic_map.plate_boundary')}`, [geojsonStr]),
+      safeQuery(`SELECT id, type as tipo, name, ${tecGeomLinha} as geom_json FROM tectonic_map.continent_structure WHERE ${geoWhereFor('tectonic_map.continent_structure')}`, [geojsonStr]),
+      safeQuery(`SELECT id, type as tipo, ${tecGeomLinha} as geom_json FROM tectonic_map.craton_terranes_limits WHERE ${geoDWithinFor('tectonic_map.craton_terranes_limits')}`, [geojsonStr]),
+      safeQuery(`SELECT id, type as tipo, age, ${tecGeomLinha} as geom_json FROM tectonic_map.dykes WHERE ${geoWhereFor('tectonic_map.dykes')}`, [geojsonStr]),
+      safeQuery(`SELECT id, type as tipo, long_dec as longitude, lat_dec as latitude, ${tecGeomPto} as geom_json FROM tectonic_map.eclogites WHERE ${geoDWithinFor('tectonic_map.eclogites')}`, [geojsonStr]),
+      safeQuery(`SELECT id, type as tipo, depth_base, ${tecGeomLinha} as geom_json FROM tectonic_map.isopachs WHERE ${geoWhereFor('tectonic_map.isopachs')}`, [geojsonStr]),
+      safeQuery(`SELECT id, source, age, long_dec as longitude, lat_dec as latitude, ${tecGeomPto} as geom_json FROM tectonic_map.kimberlites WHERE ${geoDWithinFor('tectonic_map.kimberlites')}`, [geojsonStr]),
+      safeQuery(`SELECT id, type as tipo, ${tecGeomLinha} as geom_json FROM tectonic_map.paleoz_erosional_border WHERE ${geoWhereFor('tectonic_map.paleoz_erosional_border')}`, [geojsonStr]),
+      safeQuery(`SELECT id, type as tipo, obs, ${tecGeomLinha} as geom_json FROM tectonic_map.suture_zones WHERE ${geoWhereFor('tectonic_map.suture_zones')}`, [geojsonStr]),
     ]);
     console.timeEnd('[par] tectonicas');
     analyses['9.14_analises_adicionais'].tectonicas.plate_boundary = plateBoundaryResult.rows;
@@ -4275,10 +4324,11 @@ app.use((err, req, res, next) => {
 ensureGistIndexes().catch(console.error);
 ensureLogisticaTable().catch(console.error);
 ensureRodoviasTable().catch(console.error);
+loadSridCache().catch(console.error);
 
 // Start server
 app.listen(port, () => {
   console.log(`AdGain API server running on port ${port}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
-// rebuild trigger 2026-05-26 03:09:54 UTC
+// rebuild trigger 2026-06-23 — perf: SRID cache + && prefilter (geologia/tectonica)
