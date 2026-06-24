@@ -3084,18 +3084,22 @@ app.post('/api/analises', async (req, res) => {
     let infraestrutura_proxima = { raio_km: 200, camadas: [] };
     try {
       const _proxLayers = [
-        { schema: 'silosbr',    table: 'armazens_silos',     label: 'Silos / Armazéns',    tipo: 'silo' },
-        { schema: 'infra',      table: 'ferrovias',          label: 'Ferrovias',           tipo: 'ferrovia' },
-        { schema: 'infra',      table: 'frigorificos',       label: 'Frigoríficos',        tipo: 'frigorifico' },
-        { schema: 'infra',      table: 'helipontos',         label: 'Helipontos',          tipo: 'heliponto' },
-        { schema: 'infra',      table: 'usinas_biogas',      label: 'Usinas de Biogás',    tipo: 'usina_biogas' },
-        { schema: 'infra',      table: 'usinas_etanol',      label: 'Usinas de Etanol',    tipo: 'usina_etanol' },
-        { schema: 'infra',      table: 'usinas_eolicas',     label: 'Usinas Eólicas',      tipo: 'usina_eolica' },
-        { schema: 'infra',      table: 'aerodromosprivados', label: 'Aeródromos Privados', tipo: 'aerodromo_priv' },
-        { schema: 'infra',      table: 'aerodromospublicos', label: 'Aeródromos Públicos', tipo: 'aerodromo_pub' },
-        { schema: 'quilombola', table: 'areas',              label: 'Áreas Quilombolas',   tipo: 'quilombola' },
+        // Silos: caso especial — raio 50km e os 10 mais próximos (com todas as colunas via props)
+        { schema: 'silosbr',    table: 'armazens_silos',     label: 'Silos / Armazéns',    tipo: 'silo',           raio_m: 50000,  limit: 10 },
+        { schema: 'infra',      table: 'ferrovias',          label: 'Ferrovias',           tipo: 'ferrovia',       raio_m: 200000, limit: 8 },
+        { schema: 'infra',      table: 'frigorificos',       label: 'Frigoríficos',        tipo: 'frigorifico',    raio_m: 200000, limit: 8 },
+        { schema: 'infra',      table: 'helipontos',         label: 'Helipontos',          tipo: 'heliponto',      raio_m: 200000, limit: 8 },
+        { schema: 'infra',      table: 'usinas_biogas',      label: 'Usinas de Biogás',    tipo: 'usina_biogas',   raio_m: 200000, limit: 8 },
+        { schema: 'infra',      table: 'usinas_etanol',      label: 'Usinas de Etanol',    tipo: 'usina_etanol',   raio_m: 200000, limit: 8 },
+        { schema: 'infra',      table: 'usinas_eolicas',     label: 'Usinas Eólicas',      tipo: 'usina_eolica',   raio_m: 200000, limit: 8 },
+        { schema: 'infra',      table: 'aerodromosprivados', label: 'Aeródromos Privados', tipo: 'aerodromo_priv', raio_m: 200000, limit: 8 },
+        { schema: 'infra',      table: 'aerodromospublicos', label: 'Aeródromos Públicos', tipo: 'aerodromo_pub',  raio_m: 200000, limit: 8 },
+        { schema: 'quilombola', table: 'areas',              label: 'Áreas Quilombolas',   tipo: 'quilombola',     raio_m: 200000, limit: 8 },
       ];
       const _proxResults = await Promise.all(_proxLayers.map(async (L) => {
+        const _raioM = L.raio_m || 200000;
+        const _lim = L.limit || 8;
+        const _expandDeg = (_raioM / 111320 + 0.1).toFixed(3); // bbox prefilter em graus (usa índice GIST) com margem
         const sql = `
           WITH p AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
           SELECT * FROM (
@@ -3106,23 +3110,23 @@ app.post('/api/analises', async (req, res) => {
               CASE WHEN ST_Intersects(t.geom, (SELECT g FROM p)) THEN ST_AsGeoJSON(t.geom) ELSE NULL END AS geom_json,
               COUNT(*) OVER() AS total
             FROM "${L.schema}"."${L.table}" t, p
-            WHERE t.geom && ST_Expand((SELECT g FROM p), 2.0)
-              AND ST_DWithin(t.geom::geography, (SELECT g FROM p)::geography, 200000)
+            WHERE t.geom && ST_Expand((SELECT g FROM p), ${_expandDeg})
+              AND ST_DWithin(t.geom::geography, (SELECT g FROM p)::geography, ${_raioM})
           ) s
           ORDER BY dist_km
-          LIMIT 8`;
+          LIMIT ${_lim}`;
         try {
           const r = await pool.query(sql, [geojsonStr]);
           const rows = r.rows || [];
           const total = rows.length ? Number(rows[0].total) : 0;
           return {
-            tipo: L.tipo, label: L.label, total,
+            tipo: L.tipo, label: L.label, total, raio_km: Math.round(_raioM / 1000),
             dentro_count: rows.filter(x => x.dentro).length,
             itens: rows.map(x => ({ props: x.props, dist_km: parseFloat(x.dist_km), dentro: x.dentro, geom_json: x.geom_json })),
           };
         } catch (e) {
           console.warn('[prox-200km] ' + L.schema + '.' + L.table + ' falhou:', e.message);
-          return { tipo: L.tipo, label: L.label, total: 0, dentro_count: 0, itens: [], erro: e.message };
+          return { tipo: L.tipo, label: L.label, total: 0, raio_km: Math.round((L.raio_m || 200000) / 1000), dentro_count: 0, itens: [], erro: e.message };
         }
       }));
       infraestrutura_proxima.camadas = _proxResults;
