@@ -447,6 +447,42 @@ function geoDWithinFor(tableFQN, paramIdx = 1, dist = 1.0) {
 }
 
 /**
+ * OSRM — distância e tempo RODOVIÁRIO real (segue a malha), via servidor público.
+ * origin = {lng,lat}; dests = [{lng,lat}, ...]. Retorna array alinhado a dests com
+ * { km, min } ou null. Uma única chamada /table (sources=0). Robusto a falha: lança
+ * erro que o chamador captura, mantendo a distância em linha reta como fallback.
+ * Obs.: router.project-osrm.org é p/ dev/teste (limite de uso). Em produção pesada,
+ * trocar por instância própria/host pago via env OSRM_BASE.
+ */
+const OSRM_BASE = process.env.OSRM_BASE || 'https://router.project-osrm.org';
+async function osrmRoad(origin, dests, timeoutMs = 12000) {
+  const out = new Array(dests ? dests.length : 0).fill(null);
+  if (!origin || !isFinite(origin.lng) || !isFinite(origin.lat) || !dests || !dests.length) return out;
+  const idx = [];
+  const coordParts = [`${origin.lng},${origin.lat}`];
+  dests.forEach((d, i) => {
+    if (d && isFinite(d.lng) && isFinite(d.lat)) { idx.push(i); coordParts.push(`${d.lng},${d.lat}`); }
+  });
+  if (!idx.length) return out;
+  const url = `${OSRM_BASE}/table/v1/driving/${coordParts.join(';')}?sources=0&annotations=distance,duration`;
+  const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const j = await resp.json();
+  if (j.code !== 'Ok' || !Array.isArray(j.distances) || !j.distances[0]) {
+    throw new Error('OSRM ' + (j.code || 'sem distances'));
+  }
+  const dist = j.distances[0];                       // metros: [self, dest1, dest2, ...]
+  const dur = (Array.isArray(j.durations) && j.durations[0]) || [];  // segundos
+  idx.forEach((origIndex, k) => {
+    const dm = dist[k + 1], du = dur[k + 1];
+    out[origIndex] = {
+      km: dm != null ? Math.round(dm / 100) / 10 : null,
+      min: du != null ? Math.round(du / 60) : null,
+    };
+  });
+  return out;
+}
+
+/**
  * Computa intersect de cada feature do WFS com o polígono da parcela via PostGIS
  * Recebe features GeoJSON + geojsonStr da parcela
  * Retorna lista filtrada com area_ha real da interseção
@@ -2424,7 +2460,9 @@ app.post('/api/analises', async (req, res) => {
           SELECT ST_PointOnSurface(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) AS centroide
         )
         SELECT m."NM_MUN" AS nome, m."SIGLA_UF" AS uf,
-          ROUND(CAST(ST_Distance(ST_Transform(m.geom, 4326)::geography, ST_Transform(parc.centroide, 4326)::geography) / 1000.0 AS numeric), 1) AS distancia_km
+          ROUND(CAST(ST_Distance(ST_Transform(m.geom, 4326)::geography, ST_Transform(parc.centroide, 4326)::geography) / 1000.0 AS numeric), 1) AS distancia_km,
+          ST_X(ST_Transform(ST_Centroid(m.geom), 4326)) AS lng,
+          ST_Y(ST_Transform(ST_Centroid(m.geom), 4326)) AS lat
         FROM municipios.municipios_2024 m, parc
         WHERE ST_DWithin(ST_Transform(m.geom, 4326)::geography, ST_Transform(parc.centroide, 4326)::geography, 200000)
         ORDER BY distancia_km ASC LIMIT 15
@@ -2438,10 +2476,12 @@ app.post('/api/analises', async (req, res) => {
         ranked AS (
           SELECT t.nome, t.tipo, t.municipio, t.uf,
             ROUND(CAST(ST_Distance(t.geom::geography, parc.centroide::geography) / 1000.0 AS numeric), 1) AS distancia_km,
+            ST_X(ST_Transform(t.geom, 4326)) AS lng,
+            ST_Y(ST_Transform(t.geom, 4326)) AS lat,
             ROW_NUMBER() OVER (PARTITION BY t.tipo ORDER BY ST_Distance(t.geom::geography, parc.centroide::geography) ASC) AS rn
           FROM infra.terminais_logisticos t, parc
         )
-        SELECT nome, tipo, municipio, uf, distancia_km FROM ranked WHERE rn <= 5 ORDER BY tipo, distancia_km
+        SELECT nome, tipo, municipio, uf, distancia_km, lng, lat FROM ranked WHERE rn <= 5 ORDER BY tipo, distancia_km
       `, [geojsonStr]).catch(e => { console.warn('[LOGI terms]', e.message); return { rows: [] }; });
       (termsRes.rows || []).forEach(r => {
         const key = r.tipo === 'porto_maritimo' ? 'portos_maritimos'
@@ -2475,6 +2515,25 @@ app.post('/api/analises', async (req, res) => {
         LIMIT 8
       `, [geojsonStr]).catch(e => { console.warn('[LOGI rod prox]', e.message); return { rows: [] }; });
       analyses['9.13f_logistica'].rodovias_proximas = rodProxRes.rows || [];
+
+      // OSRM — distância e tempo RODOVIÁRIO real (segue a malha) p/ cidades, portos e terminais
+      try {
+        const oRes = await pool.query(
+          `SELECT ST_X(g) AS lng, ST_Y(g) AS lat FROM (
+             SELECT ST_Transform(ST_PointOnSurface(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))), 4326) AS g
+           ) s`, [geojsonStr]);
+        const origin = oRes.rows && oRes.rows[0];
+        const grupos = ['cidades_proximas', 'portos_maritimos', 'portos_fluviais', 'portos_secos', 'terminais_ferroviarios'];
+        const flat = [];
+        grupos.forEach(g => (analyses['9.13f_logistica'][g] || []).forEach(item => flat.push(item)));
+        if (origin && flat.length) {
+          const road = await osrmRoad(origin, flat.map(x => ({ lng: Number(x.lng), lat: Number(x.lat) })));
+          flat.forEach((item, i) => {
+            if (road[i]) { item.distancia_rodovia_km = road[i].km; item.tempo_rodovia_min = road[i].min; }
+          });
+          console.log('[LOGI osrm] enriquecidos=' + road.filter(Boolean).length + '/' + flat.length);
+        }
+      } catch (e) { console.warn('[LOGI osrm]', e.message); }
 
     } catch (e) { console.warn('[LOGI]', e.message); }
 
