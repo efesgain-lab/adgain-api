@@ -3154,7 +3154,7 @@ app.post('/api/analises', async (req, res) => {
             ELSE 0 END AS numeric), 2) AS percentual_sobreposicao,
           ROUND((ST_Distance(t.geom::geography, parc.g::geography) / 1000.0)::numeric, 2) AS dist_km,
           ST_AsGeoJSON(ST_SimplifyPreserveTopology(t.geom, 0.001)) AS geom_json
-        FROM quilombola.areas t, parc
+        FROM quilombola.terrasquilombola t, parc
         WHERE t.geom && ST_Expand(parc.g, 0.05)
           AND ST_DWithin(t.geom::geography, parc.g::geography, 1000)
         ORDER BY sobreposto DESC, dist_km
