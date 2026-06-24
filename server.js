@@ -2968,7 +2968,7 @@ app.post('/api/analises', async (req, res) => {
       safeQuery(`SELECT id, type as tipo, age, ${tecGeomLinha} as geom_json FROM tectonic_map.dykes WHERE ${geoWhereFor('tectonic_map.dykes')}`, [geojsonStr]),
       safeQuery(`SELECT id, type as tipo, long_dec as longitude, lat_dec as latitude, ${tecGeomPto} as geom_json FROM tectonic_map.eclogites WHERE ${geoDWithinFor('tectonic_map.eclogites')}`, [geojsonStr]),
       safeQuery(`SELECT id, type as tipo, depth_base, ${tecGeomLinha} as geom_json FROM tectonic_map.isopachs WHERE ${geoWhereFor('tectonic_map.isopachs')}`, [geojsonStr]),
-      safeQuery(`SELECT id, source, age, long_dec as longitude, lat_dec as latitude, ${tecGeomPto} as geom_json FROM tectonic_map.kimberlites WHERE ${geoDWithinFor('tectonic_map.kimberlites')}`, [geojsonStr]),
+      safeQuery(`SELECT id, source, age, long_dec as longitude, lat_dec as latitude, ${tecGeomPto} as geom_json FROM tectonic_map.kimberlites WHERE ${geoDWithinFor('tectonic_map.kimberlites', 1, 0.09)}`, [geojsonStr]),
       safeQuery(`SELECT id, type as tipo, ${tecGeomLinha} as geom_json FROM tectonic_map.paleoz_erosional_border WHERE ${geoWhereFor('tectonic_map.paleoz_erosional_border')}`, [geojsonStr]),
       safeQuery(`SELECT id, type as tipo, obs, ${tecGeomLinha} as geom_json FROM tectonic_map.suture_zones WHERE ${geoWhereFor('tectonic_map.suture_zones')}`, [geojsonStr]),
     ]);
