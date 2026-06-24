@@ -3103,7 +3103,10 @@ app.post('/api/analises', async (req, res) => {
           WITH p AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
           SELECT * FROM (
             SELECT
-              (to_jsonb(t.*) - 'geom') AS props,
+              ((to_jsonb(t.*) - 'geom') || jsonb_build_object(
+                 '_lat', ROUND(ST_Y(ST_Centroid(t.geom))::numeric, 6),
+                 '_lng', ROUND(ST_X(ST_Centroid(t.geom))::numeric, 6)
+               )) AS props,
               ROUND((ST_Distance(t.geom::geography, (SELECT g FROM p)::geography)/1000.0)::numeric, 1) AS dist_km,
               ST_Intersects(t.geom, (SELECT g FROM p)) AS dentro,
               CASE WHEN ST_Intersects(t.geom, (SELECT g FROM p)) THEN ST_AsGeoJSON(t.geom) ELSE NULL END AS geom_json,
