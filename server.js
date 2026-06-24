@@ -3094,7 +3094,6 @@ app.post('/api/analises', async (req, res) => {
         { schema: 'infra',      table: 'usinas_eolicas',     label: 'Usinas Eólicas',      tipo: 'usina_eolica',   raio_m: 200000, limit: 8 },
         { schema: 'infra',      table: 'aerodromosprivados', label: 'Aeródromos Privados', tipo: 'aerodromo_priv', raio_m: 200000, limit: 8 },
         { schema: 'infra',      table: 'aerodromospublicos', label: 'Aeródromos Públicos', tipo: 'aerodromo_pub',  raio_m: 200000, limit: 8 },
-        { schema: 'quilombola', table: 'areas',              label: 'Áreas Quilombolas',   tipo: 'quilombola',     raio_m: 200000, limit: 8 },
       ];
       const _proxResults = await Promise.all(_proxLayers.map(async (L) => {
         const _raioM = L.raio_m || 200000;
@@ -3135,6 +3134,38 @@ app.post('/api/analises', async (req, res) => {
       console.warn('[prox-200km] erro geral:', e.message);
     }
 
+    // ===== Territórios Quilombolas — só se INCIDE na parcela ou CONFINA (até 1km); com geom p/ mapa =====
+    let terras_quilombolas = [];
+    try {
+      const _qr = await pool.query(`
+        WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
+        SELECT
+          nm_comunid AS nome,
+          nm_municip AS municipio,
+          cd_uf       AS uf,
+          nr_area_ha  AS area_hectares,
+          nr_familia  AS familias,
+          st_titulad  AS titulacao,
+          fase        AS fase,
+          esfera      AS esfera,
+          ST_Intersects(t.geom, parc.g) AS sobreposto,
+          ROUND(CAST(CASE WHEN ST_Intersects(t.geom, parc.g)
+            THEN ST_Area(ST_Intersection(t.geom, parc.g)::geography) / NULLIF(ST_Area(parc.g::geography), 0) * 100
+            ELSE 0 END AS numeric), 2) AS percentual_sobreposicao,
+          ROUND((ST_Distance(t.geom::geography, parc.g::geography) / 1000.0)::numeric, 2) AS dist_km,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology(t.geom, 0.001)) AS geom_json
+        FROM quilombola.areas t, parc
+        WHERE t.geom && ST_Expand(parc.g, 0.05)
+          AND ST_DWithin(t.geom::geography, parc.g::geography, 1000)
+        ORDER BY sobreposto DESC, dist_km
+        LIMIT 20
+      `, [geojsonStr]);
+      terras_quilombolas = _qr.rows || [];
+      console.log('[quilombola] incide/confina:', terras_quilombolas.length);
+    } catch (e) {
+      console.warn('[quilombola] falhou:', e.message);
+    }
+
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
     const centroidParsed = municipio.centroid ? JSON.parse(municipio.centroid) : null;
     const resultados = {
@@ -3172,6 +3203,7 @@ app.post('/api/analises', async (req, res) => {
       embargos:             analyses['9.7_embargos'].data,
       terras_indigenas:     analyses['9.8_terras_indigenas'].data,
       unidades_conservacao: analyses['9.9_ucs'].data,
+      terras_quilombolas,
       hidrografia: {
         bacias:                   analyses['9.10_hidrografia'].bacias,
         cursos_dagua_count:       analyses['9.10_hidrografia'].cursos_agua_count,
