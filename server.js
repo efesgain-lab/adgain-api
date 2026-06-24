@@ -3078,6 +3078,59 @@ app.post('/api/analises', async (req, res) => {
           console.log('[SoilGrids] OK (reused):', soilGrids);
         }
 
+    // ===== Infraestrutura próxima (raio 200 km) — silos, ferrovias, frigoríficos, usinas, aeródromos, quilombolas =====
+    // Agnóstico de schema: retorna atributos via to_jsonb (não depende dos nomes de coluna de cada tabela).
+    // Prefiltro && ST_Expand (usa índice GIST) + ST_DWithin geography (200km exatos). Resiliente: tabela ausente → 0.
+    let infraestrutura_proxima = { raio_km: 200, camadas: [] };
+    try {
+      const _proxLayers = [
+        { schema: 'silosbr',    table: 'armazens_silos',     label: 'Silos / Armazéns',    tipo: 'silo' },
+        { schema: 'infra',      table: 'ferrovias',          label: 'Ferrovias',           tipo: 'ferrovia' },
+        { schema: 'infra',      table: 'frigorificos',       label: 'Frigoríficos',        tipo: 'frigorifico' },
+        { schema: 'infra',      table: 'helipontos',         label: 'Helipontos',          tipo: 'heliponto' },
+        { schema: 'infra',      table: 'usinas_biogas',      label: 'Usinas de Biogás',    tipo: 'usina_biogas' },
+        { schema: 'infra',      table: 'usinas_etanol',      label: 'Usinas de Etanol',    tipo: 'usina_etanol' },
+        { schema: 'infra',      table: 'usinas_eolicas',     label: 'Usinas Eólicas',      tipo: 'usina_eolica' },
+        { schema: 'infra',      table: 'aerodromosprivados', label: 'Aeródromos Privados', tipo: 'aerodromo_priv' },
+        { schema: 'infra',      table: 'aerodromospublicos', label: 'Aeródromos Públicos', tipo: 'aerodromo_pub' },
+        { schema: 'quilombola', table: 'areas',              label: 'Áreas Quilombolas',   tipo: 'quilombola' },
+      ];
+      const _proxResults = await Promise.all(_proxLayers.map(async (L) => {
+        const sql = `
+          WITH p AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
+          SELECT * FROM (
+            SELECT
+              (to_jsonb(t.*) - 'geom') AS props,
+              ROUND((ST_Distance(t.geom::geography, (SELECT g FROM p)::geography)/1000.0)::numeric, 1) AS dist_km,
+              ST_Intersects(t.geom, (SELECT g FROM p)) AS dentro,
+              CASE WHEN ST_Intersects(t.geom, (SELECT g FROM p)) THEN ST_AsGeoJSON(t.geom) ELSE NULL END AS geom_json,
+              COUNT(*) OVER() AS total
+            FROM "${L.schema}"."${L.table}" t, p
+            WHERE t.geom && ST_Expand((SELECT g FROM p), 2.0)
+              AND ST_DWithin(t.geom::geography, (SELECT g FROM p)::geography, 200000)
+          ) s
+          ORDER BY dist_km
+          LIMIT 8`;
+        try {
+          const r = await pool.query(sql, [geojsonStr]);
+          const rows = r.rows || [];
+          const total = rows.length ? Number(rows[0].total) : 0;
+          return {
+            tipo: L.tipo, label: L.label, total,
+            dentro_count: rows.filter(x => x.dentro).length,
+            itens: rows.map(x => ({ props: x.props, dist_km: parseFloat(x.dist_km), dentro: x.dentro, geom_json: x.geom_json })),
+          };
+        } catch (e) {
+          console.warn('[prox-200km] ' + L.schema + '.' + L.table + ' falhou:', e.message);
+          return { tipo: L.tipo, label: L.label, total: 0, dentro_count: 0, itens: [], erro: e.message };
+        }
+      }));
+      infraestrutura_proxima.camadas = _proxResults;
+      console.log('[prox-200km]', _proxResults.map(c => c.tipo + '=' + c.total).join(' '));
+    } catch (e) {
+      console.warn('[prox-200km] erro geral:', e.message);
+    }
+
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
     const centroidParsed = municipio.centroid ? JSON.parse(municipio.centroid) : null;
     const resultados = {
@@ -3147,6 +3200,7 @@ app.post('/api/analises', async (req, res) => {
       },
       silos: analyses['9.13e_silos'] || null,
       logistica: analyses['9.13f_logistica'] || null,
+      infraestrutura_proxima,
       hidrologia_pivos: analyses['9.15_hidrologia_pivos'] || null,
       prodes_deter: {
         prodes:                   analyses['9.13c_prodes_deter']?.prodes || [],
