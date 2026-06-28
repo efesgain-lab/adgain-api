@@ -1414,15 +1414,16 @@ app.post('/api/analises', async (req, res) => {
         SELECT
           legenda,
           legenda as nome,
-          ST_AsGeoJSON(ST_Union(ST_Intersection(
-            CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Union(ST_Intersection(
+            ST_MakeValid(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END),
             ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-          ))) as geom_json
+          )), 0.0001)) as geom_json
         FROM solo.pedo_area
-        WHERE ST_Intersects(
-          CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
-          ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
-        )
+        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          AND ST_Intersects(
+            ST_MakeValid(CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END),
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )
         GROUP BY legenda
       `, [geojsonStr]).catch(e => { console.warn('[analises] solo geoms:', e.message); return { rows: [] }; }),
       safeQuery(`
