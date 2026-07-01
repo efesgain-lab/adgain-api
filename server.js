@@ -1173,6 +1173,153 @@ app.post('/api/buscar-feicao', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// Validação de proprietário via API Consulta CCIR (Serpro)
+// Doc: apicenter.estaleiro.serpro.gov.br/documentacao/consulta-ccir
+// Requer contrato Serpro → Consumer Key/Secret (cliente.serpro.gov.br).
+// Env: SERPRO_CCIR_KEY, SERPRO_CCIR_SECRET, SERPRO_CCIR_BASE (default trial), SERPRO_TOKEN_URL
+// ─────────────────────────────────────────────────────────────
+const SERPRO_TOKEN_URL = process.env.SERPRO_TOKEN_URL || 'https://gateway.apiserpro.serpro.gov.br/token';
+const SERPRO_CCIR_BASE = process.env.SERPRO_CCIR_BASE || 'https://gateway.apiserpro.serpro.gov.br/consulta-ccir-trial';
+let _serproToken = { value: null, exp: 0 };
+
+async function getSerproToken() {
+  // Atalho p/ ambiente trial (Bearer fixo da página de Demonstração) — pula o /token
+  if (process.env.SERPRO_CCIR_BEARER) return process.env.SERPRO_CCIR_BEARER;
+  const key = process.env.SERPRO_CCIR_KEY;
+  const secret = process.env.SERPRO_CCIR_SECRET;
+  if (!key || !secret) throw new Error('SERPRO_CCIR_KEY/SERPRO_CCIR_SECRET não configurados');
+  const now = Date.now();
+  if (_serproToken.value && now < _serproToken.exp - 30000) return _serproToken.value;
+  const basic = Buffer.from(`${key}:${secret}`).toString('base64');
+  const resp = await fetch(SERPRO_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Authorization': `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials',
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!resp.ok) throw new Error('Serpro token HTTP ' + resp.status);
+  const j = await resp.json();
+  if (!j || !j.access_token) throw new Error('Serpro token: resposta sem access_token');
+  _serproToken = { value: j.access_token, exp: now + ((Number(j.expires_in) || 3000) * 1000) };
+  return _serproToken.value;
+}
+
+function soDigitos(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
+
+// Máscara de CPF/CNPJ para exibição (LGPD)
+function mascararNI(ni) {
+  const d = soDigitos(ni);
+  if (d.length === 11) return `***.${d.slice(3, 6)}.${d.slice(6, 9)}-**`;
+  if (d.length === 14) return `**.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-**`;
+  return d ? d.slice(0, 3) + '***' : '';
+}
+
+// Extrai a lista de titulares (nomeTitular + cpfCnpj + condição + %) da resposta do CCIR
+function extrairTitulares(payload) {
+  let lista = null;
+  const find = (o) => {
+    if (lista || !o || typeof o !== 'object') return;
+    if (Array.isArray(o.titulares)) { lista = o.titulares; return; }
+    if (Array.isArray(o)) { o.forEach(find); return; }
+    Object.values(o).forEach(find);
+  };
+  find(payload);
+  if (!Array.isArray(lista)) return [];
+  return lista.map(t => ({
+    cpfCnpj: soDigitos(t && t.cpfCnpj),
+    nome: (t && (t.nomeTitular || t.nome)) || '',
+    condicao: (t && t.condicaoTitularidade) || '',
+    percentual: (t && t.percentualDetencao != null) ? t.percentualDetencao : null,
+    menor: /^\*+$/.test(String((t && t.cpfCnpj) || '')) || String((t && t.nomeTitular) || '').toUpperCase().includes('MENOR')
+  }));
+}
+
+// Resumo do imóvel a partir da resposta do CCIR
+function resumoImovelCcir(payload) {
+  let obj = null;
+  const find = (o) => {
+    if (obj || !o || typeof o !== 'object') return;
+    if (o.codigoImovelIncra !== undefined && o.titulares !== undefined) { obj = o; return; }
+    if (Array.isArray(o)) { o.forEach(find); return; }
+    Object.values(o).forEach(find);
+  };
+  find(payload);
+  if (!obj) obj = (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : {};
+  const ccir = obj.dadosUltimoCcir || {};
+  return {
+    codigoImovel: obj.codigoImovelIncra != null ? obj.codigoImovelIncra : null,
+    denominacao: obj.denominacao != null ? obj.denominacao : null,
+    areaTotal: obj.areaTotal != null ? obj.areaTotal : null,
+    municipio: obj.municipioSede != null ? obj.municipioSede : null,
+    uf: obj.ufSede != null ? obj.ufSede : null,
+    classificacao: obj.classificacaoFundiaria != null ? obj.classificacaoFundiaria : null,
+    modulosFiscais: obj.numeroModulosFiscais != null ? obj.numeroModulosFiscais : null,
+    numeroCcir: ccir.numeroCcir != null ? ccir.numeroCcir : null,
+    situacaoCcir: ccir.situacaoCcir != null ? ccir.situacaoCcir : null
+  };
+}
+
+// Serviço 1 — dados do CCIR por código do imóvel (traz titulares). Header x-signature obrigatório.
+async function consultarDadosCcirPorCodigo(codigo) {
+  const token = await getSerproToken();
+  const url = `${SERPRO_CCIR_BASE}/v1/consultarDadosCcirPorCodigoImovel/${encodeURIComponent(soDigitos(codigo))}`;
+  const resp = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}`, 'accept': 'application/json', 'x-signature': process.env.SERPRO_CCIR_XSIG || '1' },
+    signal: AbortSignal.timeout(15000)
+  });
+  const txt = await resp.text();
+  let data; try { data = JSON.parse(txt); } catch { data = txt; }
+  return { status: resp.status, ok: resp.ok, data };
+}
+
+// Serviço 2 — códigos de imóvel por CPF/CNPJ do titular (retorna array de códigos)
+async function consultarImoveisPorNI(ni) {
+  const token = await getSerproToken();
+  const url = `${SERPRO_CCIR_BASE}/v1/consultarCodigoImovelPorNI/${encodeURIComponent(soDigitos(ni))}`;
+  const resp = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}`, 'accept': 'application/json' },
+    signal: AbortSignal.timeout(15000)
+  });
+  const txt = await resp.text();
+  let data; try { data = JSON.parse(txt); } catch { data = txt; }
+  const codigos = Array.isArray(data) ? data.map(soDigitos).filter(c => c.length >= 8)
+    : (data && Array.isArray(data.codigosImoveis) ? data.codigosImoveis.map(soDigitos) : []);
+  return { status: resp.status, ok: resp.ok, data, codigos };
+}
+
+/**
+ * POST /api/validar-proprietario
+ * body: { ni: CPF|CNPJ, codigoImovel: código SNCR (13) }
+ * Confere se o NI do anunciante é titular do imóvel no CCIR (Serpro), via consultarDadosCcirPorCodigoImovel.
+ */
+app.post('/api/validar-proprietario', async (req, res) => {
+  try {
+    const ni = soDigitos(req.body && req.body.ni);
+    const codigoImovel = soDigitos(req.body && req.body.codigoImovel);
+    if (!ni || !codigoImovel) return res.status(400).json({ erro: 'Informe ni (CPF/CNPJ) e codigoImovel' });
+    const ambiente = SERPRO_CCIR_BASE.includes('trial') ? 'trial' : 'producao';
+    const r = await consultarDadosCcirPorCodigo(codigoImovel);
+    if (r.status === 404) return res.json({ confere: false, motivo: 'Imóvel não encontrado no CCIR', codigoImovel, ambiente });
+    if (!r.ok) return res.status(502).json({ erro: 'Consulta CCIR falhou', status: r.status, detalhe: r.data });
+    const titulares = extrairTitulares(r.data);
+    const titularConfere = titulares.find(t => t.cpfCnpj && t.cpfCnpj === ni) || null;
+    return res.json({
+      confere: !!titularConfere,
+      codigoImovel,
+      ni,
+      titular: titularConfere ? { nome: titularConfere.nome, condicao: titularConfere.condicao, percentual: titularConfere.percentual } : null,
+      titulares: titulares.map(t => ({ nome: t.nome, cpfCnpj: mascararNI(t.cpfCnpj), condicao: t.condicao, percentual: t.percentual })),
+      imovel: resumoImovelCcir(r.data),
+      ambiente,
+      fonte: 'Serpro/CCIR'
+    });
+  } catch (e) {
+    console.error('[validar-proprietario]', e.message);
+    return res.status(500).json({ erro: e.message });
+  }
+});
+
 /**
  * POST /api/analises
  * Runs ALL analyses on a GeoJSON polygon
