@@ -2560,7 +2560,7 @@ app.post('/api/analises', async (req, res) => {
         if (origin) {
           const gruposRota = ['portos_maritimos', 'portos_fluviais', 'portos_secos', 'terminais_ferroviarios'];
           const alvos = [];
-          gruposRota.forEach(g => (analyses['9.13f_logistica'][g] || []).slice(0, 3).forEach(item => {
+          gruposRota.forEach(g => (analyses['9.13f_logistica'][g] || []).slice(0, 5).forEach(item => {
             if (isFinite(Number(item.lng)) && isFinite(Number(item.lat))) alvos.push(item);
           }));
           const CONC = 3;
