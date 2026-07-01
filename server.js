@@ -1231,6 +1231,8 @@ function extrairTitulares(payload) {
     nome: (t && (t.nomeTitular || t.nome)) || '',
     condicao: (t && t.condicaoTitularidade) || '',
     percentual: (t && t.percentualDetencao != null) ? t.percentualDetencao : null,
+    declarante: (t && t.declarante != null) ? t.declarante : null,
+    nacionalidade: (t && t.nacionalidade != null) ? t.nacionalidade : null,
     menor: /^\*+$/.test(String((t && t.cpfCnpj) || '')) || String((t && t.nomeTitular) || '').toUpperCase().includes('MENOR')
   }));
 }
@@ -1255,8 +1257,11 @@ function resumoImovelCcir(payload) {
     uf: obj.ufSede != null ? obj.ufSede : null,
     classificacao: obj.classificacaoFundiaria != null ? obj.classificacaoFundiaria : null,
     modulosFiscais: obj.numeroModulosFiscais != null ? obj.numeroModulosFiscais : null,
+    totalPessoas: obj.totalPessoasRelacionadasImovel != null ? obj.totalPessoasRelacionadasImovel : null,
+    areasRegistradas: Array.isArray(obj.areasRegistradas) ? obj.areasRegistradas : null,
     numeroCcir: ccir.numeroCcir != null ? ccir.numeroCcir : null,
-    situacaoCcir: ccir.situacaoCcir != null ? ccir.situacaoCcir : null
+    situacaoCcir: ccir.situacaoCcir != null ? ccir.situacaoCcir : null,
+    dataVencimentoCcir: ccir.dataVencimentoCcir != null ? ccir.dataVencimentoCcir : null
   };
 }
 
@@ -1297,23 +1302,27 @@ app.post('/api/validar-proprietario', async (req, res) => {
   try {
     const ni = soDigitos(req.body && req.body.ni);
     const codigoImovel = soDigitos(req.body && req.body.codigoImovel);
-    if (!ni || !codigoImovel) return res.status(400).json({ erro: 'Informe ni (CPF/CNPJ) e codigoImovel' });
+    const debug = req.body && (req.body.debug === true || req.body.debug === 1 || req.body.debug === '1');
+    if (!codigoImovel) return res.status(400).json({ erro: 'Informe codigoImovel (código SNCR de 13 dígitos)' });
     const ambiente = SERPRO_CCIR_BASE.includes('trial') ? 'trial' : 'producao';
     const r = await consultarDadosCcirPorCodigo(codigoImovel);
     if (r.status === 404) return res.json({ confere: false, motivo: 'Imóvel não encontrado no CCIR', codigoImovel, ambiente });
     if (!r.ok) return res.status(502).json({ erro: 'Consulta CCIR falhou', status: r.status, detalhe: r.data });
     const titulares = extrairTitulares(r.data);
-    const titularConfere = titulares.find(t => t.cpfCnpj && t.cpfCnpj === ni) || null;
-    return res.json({
+    const titularConfere = ni ? (titulares.find(t => t.cpfCnpj && t.cpfCnpj === ni) || null) : null;
+    const resposta = {
       confere: !!titularConfere,
       codigoImovel,
-      ni,
-      titular: titularConfere ? { nome: titularConfere.nome, condicao: titularConfere.condicao, percentual: titularConfere.percentual } : null,
-      titulares: titulares.map(t => ({ nome: t.nome, cpfCnpj: mascararNI(t.cpfCnpj), condicao: t.condicao, percentual: t.percentual })),
+      ni: ni || null,
+      titular: titularConfere ? { nome: titularConfere.nome, cpfCnpj: mascararNI(titularConfere.cpfCnpj), condicao: titularConfere.condicao, percentual: titularConfere.percentual } : null,
+      titulares: titulares.map(t => ({ nome: t.nome, cpfCnpj: mascararNI(t.cpfCnpj), condicao: t.condicao, percentual: t.percentual, declarante: t.declarante, nacionalidade: t.nacionalidade })),
       imovel: resumoImovelCcir(r.data),
       ambiente,
       fonte: 'Serpro/CCIR'
-    });
+    };
+    // debug:true → devolve o payload BRUTO completo do CCIR (inclui CPF/CNPJ sem máscara). Uso só em teste; remover/gate antes do fluxo público.
+    if (debug) resposta.bruto = r.data;
+    return res.json(resposta);
   } catch (e) {
     console.error('[validar-proprietario]', e.message);
     return res.status(500).json({ erro: e.message });
