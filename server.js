@@ -483,6 +483,27 @@ async function osrmRoad(origin, dests, timeoutMs = 12000) {
 }
 
 /**
+ * OSRM — geometria da ROTA rodoviária real (caminho por estrada) entre origin e dest.
+ * origin/dest = {lng,lat}. Retorna { coords: [[lng,lat],...], km, min } ou null em falha.
+ * overview=simplified mantém a geometria leve o bastante para guardar no anúncio.
+ */
+async function osrmRoute(origin, dest, timeoutMs = 9000) {
+  try {
+    if (!origin || !dest || !isFinite(origin.lng) || !isFinite(origin.lat) || !isFinite(dest.lng) || !isFinite(dest.lat)) return null;
+    const url = `${OSRM_BASE}/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=simplified&geometries=geojson`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const j = await resp.json();
+    const route = j && Array.isArray(j.routes) && j.routes[0];
+    if (!route || !route.geometry || !Array.isArray(route.geometry.coordinates) || route.geometry.coordinates.length < 2) return null;
+    return {
+      coords: route.geometry.coordinates,
+      km: route.distance != null ? Math.round(route.distance / 100) / 10 : null,
+      min: route.duration != null ? Math.round(route.duration / 60) : null,
+    };
+  } catch { return null; }
+}
+
+/**
  * Computa intersect de cada feature do WFS com o polígono da parcela via PostGIS
  * Recebe features GeoJSON + geojsonStr da parcela
  * Retorna lista filtrada com area_ha real da interseção
@@ -2533,6 +2554,28 @@ app.post('/api/analises', async (req, res) => {
             if (road[i]) { item.distancia_rodovia_km = road[i].km; item.tempo_rodovia_min = road[i].min; }
           });
           console.log('[LOGI osrm] enriquecidos=' + road.filter(Boolean).length + '/' + flat.length);
+        }
+
+        // OSRM — geometria da ROTA por estrada (escoamento: portos + terminais), até 3 por grupo
+        if (origin) {
+          const gruposRota = ['portos_maritimos', 'portos_fluviais', 'portos_secos', 'terminais_ferroviarios'];
+          const alvos = [];
+          gruposRota.forEach(g => (analyses['9.13f_logistica'][g] || []).slice(0, 3).forEach(item => {
+            if (isFinite(Number(item.lng)) && isFinite(Number(item.lat))) alvos.push(item);
+          }));
+          const CONC = 3;
+          for (let i = 0; i < alvos.length; i += CONC) {
+            const lote = alvos.slice(i, i + CONC);
+            await Promise.all(lote.map(async item => {
+              const rota = await osrmRoute(origin, { lng: Number(item.lng), lat: Number(item.lat) });
+              if (rota && Array.isArray(rota.coords) && rota.coords.length > 1) {
+                item.rota_coords = rota.coords;
+                if (item.distancia_rodovia_km == null && rota.km != null) item.distancia_rodovia_km = rota.km;
+                if (item.tempo_rodovia_min == null && rota.min != null) item.tempo_rodovia_min = rota.min;
+              }
+            }));
+          }
+          console.log('[LOGI rota] geometrias=' + alvos.filter(a => a.rota_coords).length + '/' + alvos.length);
         }
       } catch (e) { console.warn('[LOGI osrm]', e.message); }
 
