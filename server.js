@@ -1293,6 +1293,46 @@ async function consultarImoveisPorNI(ni) {
   return { status: resp.status, ok: resp.ok, data, codigos };
 }
 
+// ---- QSA (quadro de sócios) via BrasilAPI — grátis, sem token ----
+// Miolo do CPF = 6 dígitos do meio (posições 4-9), que é o que a Receita expõe no QSA.
+function miolo6Cpf(cpf) { const d = soDigitos(cpf); return d.length === 11 ? d.slice(3, 9) : null; }
+function normalizarNome(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+// Exibição do documento do sócio (CPF mascarado de 6 dígitos, ou CPF/CNPJ completo)
+function mascararSocioDoc(doc) {
+  const d = soDigitos(doc);
+  if (d.length === 6) return `***.${d.slice(0, 3)}.${d.slice(3, 6)}-**`;
+  if (d.length === 11 || d.length === 14) return mascararNI(d);
+  return doc || '';
+}
+// Compara o CPF/CNPJ do anunciante com o documento (possivelmente mascarado) do sócio
+function socioBateNI(socioDoc, ni) {
+  const d = soDigitos(socioDoc); const niD = soDigitos(ni);
+  if (!niD || !d) return false;
+  if (niD.length === 14) return d.length === 14 && d === niD;   // anunciante PJ = sócio PJ
+  if (niD.length === 11) {                                       // anunciante PF
+    if (d.length === 6) return d === miolo6Cpf(niD);            // CPF do sócio mascarado (miolo)
+    if (d.length === 11) return d === niD;                       // CPF completo (raro)
+  }
+  return false;
+}
+async function consultarQsaBrasilApi(cnpj) {
+  const c = soDigitos(cnpj);
+  try {
+    const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${c}`, { headers: { 'accept': 'application/json' }, signal: AbortSignal.timeout(12000) });
+    const txt = await resp.text(); let data; try { data = JSON.parse(txt); } catch { data = txt; }
+    if (!resp.ok) return { ok: false, status: resp.status, cnpj: c, socios: [], data };
+    const socios = Array.isArray(data && data.qsa) ? data.qsa.map(s => ({
+      nome: s.nome_socio || s.nome || '',
+      doc: String(s.cnpj_cpf_do_socio || s.cpf_cnpj_socio || ''),
+      qualificacao: s.qualificacao_socio || '',
+      entrada: s.data_entrada_sociedade || ''
+    })) : [];
+    return { ok: true, status: resp.status, cnpj: c, razaoSocial: (data && data.razao_social) || '', situacao: (data && data.descricao_situacao_cadastral) || '', socios };
+  } catch (e) { return { ok: false, status: 0, cnpj: c, socios: [], erro: String((e && e.message) || e) }; }
+}
+
 /**
  * POST /api/validar-proprietario
  * body: { ni: CPF|CNPJ, codigoImovel: código SNCR (13) }
@@ -1301,6 +1341,7 @@ async function consultarImoveisPorNI(ni) {
 app.post('/api/validar-proprietario', async (req, res) => {
   try {
     const ni = soDigitos(req.body && req.body.ni);
+    const nome = (req.body && req.body.nome) ? String(req.body.nome) : '';
     const codigoImovel = soDigitos(req.body && req.body.codigoImovel);
     const debug = req.body && (req.body.debug === true || req.body.debug === 1 || req.body.debug === '1');
     if (!codigoImovel) return res.status(400).json({ erro: 'Informe codigoImovel (código SNCR de 13 dígitos)' });
@@ -1309,19 +1350,50 @@ app.post('/api/validar-proprietario', async (req, res) => {
     if (r.status === 404) return res.json({ confere: false, motivo: 'Imóvel não encontrado no CCIR', codigoImovel, ambiente });
     if (!r.ok) return res.status(502).json({ erro: 'Consulta CCIR falhou', status: r.status, detalhe: r.data });
     const titulares = extrairTitulares(r.data);
-    const titularConfere = ni ? (titulares.find(t => t.cpfCnpj && t.cpfCnpj === ni) || null) : null;
+
+    // (1) Match direto: o NI do anunciante é um titular do imóvel (PF ou PJ)
+    let titularConfere = ni ? (titulares.find(t => t.cpfCnpj && t.cpfCnpj === ni) || null) : null;
+    let via = titularConfere ? 'titular_direto' : null;
+
+    // (2) Titular PJ → busca o QSA (BrasilAPI) e tenta casar o anunciante como sócio
+    let socioConfere = null;
+    const empresas = [];
+    const empresasRaw = [];
+    const nomeNorm = normalizarNome(nome);
+    for (const tpj of titulares.filter(t => t.cpfCnpj && t.cpfCnpj.length === 14)) {
+      const q = await consultarQsaBrasilApi(tpj.cpfCnpj);
+      empresas.push({
+        cnpj: mascararNI(tpj.cpfCnpj), razaoSocial: q.razaoSocial || tpj.nome, situacao: q.situacao || null, ok: q.ok,
+        socios: (q.socios || []).map(s => ({ nome: s.nome, cpf: mascararSocioDoc(s.doc), qualificacao: s.qualificacao, entrada: s.entrada }))
+      });
+      empresasRaw.push({ cnpj: tpj.cpfCnpj, razaoSocial: q.razaoSocial, ok: q.ok, status: q.status, socios: q.socios, erro: q.erro });
+      if (!socioConfere && ni) {
+        const achado = (q.socios || []).find(s => socioBateNI(s.doc, ni)
+          && (!nomeNorm || !s.nome || normalizarNome(s.nome).includes(nomeNorm) || nomeNorm.includes(normalizarNome(s.nome))));
+        if (achado) socioConfere = {
+          empresaCnpj: mascararNI(tpj.cpfCnpj), empresaNome: q.razaoSocial || tpj.nome,
+          socioNome: achado.nome, qualificacao: achado.qualificacao,
+          nomeConfere: !!(nomeNorm && achado.nome && (normalizarNome(achado.nome).includes(nomeNorm) || nomeNorm.includes(normalizarNome(achado.nome))))
+        };
+      }
+    }
+    if (!via && socioConfere) via = 'socio_qsa';
+
     const resposta = {
-      confere: !!titularConfere,
+      confere: !!(titularConfere || socioConfere),
+      via,
       codigoImovel,
       ni: ni || null,
       titular: titularConfere ? { nome: titularConfere.nome, cpfCnpj: mascararNI(titularConfere.cpfCnpj), condicao: titularConfere.condicao, percentual: titularConfere.percentual } : null,
-      titulares: titulares.map(t => ({ nome: t.nome, cpfCnpj: mascararNI(t.cpfCnpj), condicao: t.condicao, percentual: t.percentual, declarante: t.declarante, nacionalidade: t.nacionalidade })),
+      socio: socioConfere,
+      titulares: titulares.map(t => ({ nome: t.nome, cpfCnpj: mascararNI(t.cpfCnpj), tipo: (t.cpfCnpj && t.cpfCnpj.length === 14) ? 'PJ' : 'PF', condicao: t.condicao, percentual: t.percentual, declarante: t.declarante, nacionalidade: t.nacionalidade })),
+      empresas: empresas.length ? empresas : undefined,
       imovel: resumoImovelCcir(r.data),
       ambiente,
-      fonte: 'Serpro/CCIR'
+      fonte: 'Serpro/CCIR + BrasilAPI/QSA'
     };
-    // debug:true → devolve o payload BRUTO completo do CCIR (inclui CPF/CNPJ sem máscara). Uso só em teste; remover/gate antes do fluxo público.
-    if (debug) resposta.bruto = r.data;
+    // debug:true → payloads brutos (CCIR + QSA). Uso só em teste; remover/gate antes do fluxo público.
+    if (debug) { resposta.bruto = r.data; resposta.qsaBruto = empresasRaw; }
     return res.json(resposta);
   } catch (e) {
     console.error('[validar-proprietario]', e.message);
