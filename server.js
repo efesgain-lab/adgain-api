@@ -1103,6 +1103,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
           'SIGEF' as source,
           gid as id,
           parcela_co as numero,
+          codigo_imo,
           ST_AsGeoJSON(geom) as geojson,
           ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
         FROM ${sigefTable}
@@ -1121,6 +1122,7 @@ app.post('/api/buscar-feicao', async (req, res) => {
             'SNCI' as source,
             gid as id,
             num_proces as numero,
+            cod_imovel as codigo_imo,
             ST_AsGeoJSON(geom) as geojson,
             ROUND(CAST(ST_Area(ST_Transform(geom, 32721)) / 10000 AS numeric), 2) as area_hectares
           FROM ${snciTable}
@@ -1164,6 +1166,8 @@ app.post('/api/buscar-feicao', async (req, res) => {
       source: row.source,
       id: row.id,
       numero: row.numero,
+      // Código do imóvel (SNCR) — presente em SIGEF/SNCI; usado na validação de proprietário via CCIR
+      codigo_imo: row.codigo_imo || null,
       area_hectares: row.area_hectares,
       geojson: JSON.parse(row.geojson),
     });
@@ -1317,20 +1321,34 @@ function socioBateNI(socioDoc, ni) {
   }
   return false;
 }
+// Consulta QSA em provedores públicos gratuitos, em cascata (User-Agent de navegador evita bloqueio 403 de datacenter).
 async function consultarQsaBrasilApi(cnpj) {
   const c = soDigitos(cnpj);
-  try {
-    const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${c}`, { headers: { 'accept': 'application/json' }, signal: AbortSignal.timeout(12000) });
-    const txt = await resp.text(); let data; try { data = JSON.parse(txt); } catch { data = txt; }
-    if (!resp.ok) return { ok: false, status: resp.status, cnpj: c, socios: [], data };
-    const socios = Array.isArray(data && data.qsa) ? data.qsa.map(s => ({
-      nome: s.nome_socio || s.nome || '',
-      doc: String(s.cnpj_cpf_do_socio || s.cpf_cnpj_socio || ''),
-      qualificacao: s.qualificacao_socio || '',
-      entrada: s.data_entrada_sociedade || ''
-    })) : [];
-    return { ok: true, status: resp.status, cnpj: c, razaoSocial: (data && data.razao_social) || '', situacao: (data && data.descricao_situacao_cadastral) || '', socios };
-  } catch (e) { return { ok: false, status: 0, cnpj: c, socios: [], erro: String((e && e.message) || e) }; }
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+  const H = { 'accept': 'application/json', 'User-Agent': UA };
+  const provedores = [
+    { nome: 'brasilapi', url: `https://brasilapi.com.br/api/cnpj/v1/${c}`, parse: (d) => ({
+        razao: d && d.razao_social, sit: d && d.descricao_situacao_cadastral,
+        socios: (d && Array.isArray(d.qsa) ? d.qsa : []).map(s => ({ nome: s.nome_socio || s.nome || '', doc: String(s.cnpj_cpf_do_socio || s.cpf_cnpj_socio || ''), qual: s.qualificacao_socio || '', entrada: s.data_entrada_sociedade || '' })) }) },
+    { nome: 'cnpjws', url: `https://publica.cnpj.ws/cnpj/${c}`, parse: (d) => ({
+        razao: d && d.razao_social, sit: d && d.estabelecimento && d.estabelecimento.situacao_cadastral,
+        socios: (d && Array.isArray(d.socios) ? d.socios : []).map(s => ({ nome: s.nome || '', doc: String(s.cpf_cnpj_socio || ''), qual: (s.qualificacao_socio && s.qualificacao_socio.descricao) ? String(s.qualificacao_socio.descricao).trim() : '', entrada: s.data_entrada || '' })) }) }
+  ];
+  let ultimo = { status: 0, erro: null };
+  for (const p of provedores) {
+    try {
+      const resp = await fetch(p.url, { headers: H, signal: AbortSignal.timeout(12000) });
+      ultimo.status = resp.status;
+      if (!resp.ok) { ultimo.erro = 'HTTP ' + resp.status + ' @' + p.nome; continue; }
+      const txt = await resp.text(); let d; try { d = JSON.parse(txt); } catch { d = null; }
+      const parsed = p.parse(d);
+      if (parsed && Array.isArray(parsed.socios)) {
+        return { ok: true, status: resp.status, provedor: p.nome, cnpj: c, razaoSocial: parsed.razao || '', situacao: parsed.sit || '',
+          socios: parsed.socios.map(s => ({ nome: s.nome || '', doc: String(s.doc || ''), qualificacao: s.qual || '', entrada: s.entrada || '' })) };
+      }
+    } catch (e) { ultimo.erro = String((e && e.message) || e) + ' @' + p.nome; }
+  }
+  return { ok: false, status: ultimo.status, cnpj: c, socios: [], erro: ultimo.erro };
 }
 
 /**
@@ -1366,7 +1384,7 @@ app.post('/api/validar-proprietario', async (req, res) => {
         cnpj: mascararNI(tpj.cpfCnpj), razaoSocial: q.razaoSocial || tpj.nome, situacao: q.situacao || null, ok: q.ok,
         socios: (q.socios || []).map(s => ({ nome: s.nome, cpf: mascararSocioDoc(s.doc), qualificacao: s.qualificacao, entrada: s.entrada }))
       });
-      empresasRaw.push({ cnpj: tpj.cpfCnpj, razaoSocial: q.razaoSocial, ok: q.ok, status: q.status, socios: q.socios, erro: q.erro });
+      empresasRaw.push({ cnpj: tpj.cpfCnpj, razaoSocial: q.razaoSocial, ok: q.ok, status: q.status, provedor: q.provedor, socios: q.socios, erro: q.erro });
       if (!socioConfere && ni) {
         const achado = (q.socios || []).find(s => socioBateNI(s.doc, ni)
           && (!nomeNorm || !s.nome || normalizarNome(s.nome).includes(nomeNorm) || nomeNorm.includes(normalizarNome(s.nome))));
@@ -1398,6 +1416,85 @@ app.post('/api/validar-proprietario', async (req, res) => {
   } catch (e) {
     console.error('[validar-proprietario]', e.message);
     return res.status(500).json({ erro: e.message });
+  }
+});
+
+/**
+ * POST /api/codigo-imovel
+ * body: { geojson, origem?: 'sigef' | 'snci' | 'car' | 'desenho' }
+ * Endpoint leve para o fluxo "anunciar sem análise": aplica a MESMA regra de
+ * correspondência da análise fundiária (sobreposição >= 30%) e retorna apenas
+ * os códigos do imóvel (SNCR) das parcelas SIGEF/SNCI correspondentes.
+ * Não roda a análise completa e não consome créditos.
+ */
+app.post('/api/codigo-imovel', async (req, res) => {
+  try {
+    const { geojson } = req.body;
+    if (!geojson) return res.status(400).json({ error: 'geojson required in body' });
+
+    const feature = parseGeoJSONFeature(geojson);
+    const geojsonStr = JSON.stringify(feature);
+
+    // UF da parcela (mesma lógica do /api/analises)
+    let uf = await getUFFromGeoJSON(geojsonStr);
+    if (!uf) {
+      try {
+        const centroidRes = await safeQuery(
+          `SELECT ST_X(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as lng,
+                  ST_Y(ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674))) as lat`,
+          [geojsonStr]
+        );
+        const c = centroidRes.rows[0];
+        if (c) uf = getUFFromPointFallback(c.lat, c.lng);
+      } catch (_) {}
+    }
+    uf = (uf || 'mt').toLowerCase();
+    const sigefTable = `incra.sigef_${uf}`;
+    const snciTable = `incra.snci_${uf}`;
+
+    // Mesma regra da análise fundiária: parcelas com sobreposição real >= 30%
+    const sigefResult = await safeQuery(`
+      SELECT DISTINCT ON (t.gid) t.gid as id,
+        t.parcela_co, t.nome_area, t.situacao_i, t.codigo_imo, t.registro_m,
+        ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+      FROM ${sigefTable} t
+      WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
+        CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+      )
+      AND ST_Area(ST_Intersection(
+        CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+      )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
+      ORDER BY t.gid
+    `, [geojsonStr]);
+
+    const snciResult = await safeQuery(`
+      SELECT DISTINCT ON (t.gid) t.gid as id,
+        t.cod_imovel, t.nome_imove, t.num_certif,
+        ROUND(CAST(ST_Area(ST_Transform(t.geom, 32721)) / 10000 AS numeric), 2) as area_hectares
+      FROM ${snciTable} t
+      WHERE t.geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AND ST_Intersects(
+        CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+      )
+      AND ST_Area(ST_Intersection(
+        CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+        ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+      )) / NULLIF(ST_Area(CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END), 0) >= 0.3
+      ORDER BY t.gid
+    `, [geojsonStr]);
+
+    const sigef = sigefResult.rows || [];
+    const snci = snciResult.rows || [];
+    const codigoImovel = (sigef.find(r => r.codigo_imo) || {}).codigo_imo
+      || (snci.find(r => r.cod_imovel) || {}).cod_imovel
+      || null;
+
+    return res.json({ uf: uf.toUpperCase(), codigoImovel, sigef, snci });
+  } catch (e) {
+    console.error('[codigo-imovel]', e.message);
+    return res.status(500).json({ error: e.message });
   }
 });
 
