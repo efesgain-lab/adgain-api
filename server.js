@@ -1006,45 +1006,60 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
 // SoilGrids v2.0 — ISRIC — propriedades do solo por camada
 // ============================================================================
 async function fetchSoilGrids(lat, lng) {
-  const props  = ['clay', 'sand', 'silt', 'soc', 'phh2o', 'nitrogen', 'bdod'];
-  const depths = ['0-5cm', '5-15cm', '15-30cm', '30-60cm'];
+  // O relatorio e a coluna de resultados usam APENAS a camada superficial (0-5cm)
+  // com 6 propriedades. Buscar so o necessario deixa a query ~5x mais leve na ISRIC
+  // (menos timeout) e evita passar do limite de requisicoes (HTTP 429).
+  const props  = ['clay', 'sand', 'silt', 'soc', 'phh2o', 'bdod'];
+  const depths = ['0-5cm'];
 
   const qs = new URLSearchParams();
   qs.append('lon', lng.toFixed(6));
   qs.append('lat', lat.toFixed(6));
   props.forEach(p  => qs.append('property', p));
   depths.forEach(d => qs.append('depth', d));
-  ['mean'].forEach(val => qs.append('value', val));
+  qs.append('value', 'mean');
 
   const url = 'https://rest.isric.org/soilgrids/v2.0/properties/query?' + qs.toString();
 
-  try {
-    console.log('[SoilGrids] fetch', url.slice(0, 80));
-    // Timeout: ISRIC pode ser lento — aguarda ate 20s antes de desistir
-    const resp = await fetch(url, { signal: AbortSignal.timeout(20000) });
-    if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
-    const data = await resp.json();
+  const factor = { clay: 0.1, sand: 0.1, silt: 0.1, soc: 0.1, phh2o: 0.1, nitrogen: 0.01, bdod: 0.01 };
+  const label  = { clay: 'argila_%', sand: 'areia_%', silt: 'silte_%', soc: 'carbono_organico_g_kg', phh2o: 'ph', nitrogen: 'nitrogenio_g_kg', bdod: 'densidade_g_cm3' };
 
-    const factor = { clay: 0.1, sand: 0.1, silt: 0.1, soc: 0.1, phh2o: 0.1, nitrogen: 0.01, bdod: 0.01 };
-    const label  = { clay: 'argila_%', sand: 'areia_%', silt: 'silte_%', soc: 'carbono_organico_g_kg', phh2o: 'ph', nitrogen: 'nitrogenio_g_kg', bdod: 'densidade_g_cm3' };
+  // ISRIC e lenta e limita requisicoes (HTTP 429). Tenta ate 3x com backoff.
+  const MAX_ATTEMPTS = 3;
+  let lastErr = 'desconhecido';
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      console.log('[SoilGrids] fetch tentativa ' + attempt + '/' + MAX_ATTEMPTS, url.slice(0, 80));
+      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
+      const data = await resp.json();
 
-    const camadas = {};
-    const layers = (data && data.properties && data.properties.layers) ? data.properties.layers : [];
-    for (const layer of layers) {
-      for (const dep of (layer.depths || [])) {
-        const d   = dep.label;
-        const val = dep.values && dep.values.mean;
-        if (!camadas[d]) camadas[d] = {};
-        camadas[d][label[layer.name]] = (val !== null && val !== undefined)
-          ? Math.round(val * factor[layer.name] * 10) / 10
-          : null;
+      const camadas = {};
+      const layers = (data && data.properties && data.properties.layers) ? data.properties.layers : [];
+      for (const layer of layers) {
+        for (const dep of (layer.depths || [])) {
+          const d   = dep.label;
+          const val = dep.values && dep.values.mean;
+          if (!camadas[d]) camadas[d] = {};
+          camadas[d][label[layer.name]] = (val !== null && val !== undefined)
+            ? Math.round(val * factor[layer.name] * 10) / 10
+            : null;
+        }
+      }
+      if (!camadas['0-5cm']) throw new Error('resposta sem camada 0-5cm');
+      console.log('[SoilGrids] OK na tentativa ' + attempt);
+      return { pendente: false, erro: null, camadas };
+    } catch (e) {
+      lastErr = e.message;
+      console.warn('[SoilGrids] tentativa ' + attempt + ' falhou:', e.message);
+      if (attempt < MAX_ATTEMPTS) {
+        // backoff crescente (3s, 6s) — da tempo pro rate-limit da ISRIC liberar
+        await new Promise(res => setTimeout(res, attempt * 3000));
       }
     }
-    return { pendente: false, erro: null, camadas };
-  } catch (e) {
-    console.warn('[SoilGrids] erro:', e.message);
-    return { pendente: false, erro: 'SoilGrids indisponivel: ' + e.message, camadas: null };
   }
+  console.warn('[SoilGrids] esgotou as tentativas:', lastErr);
+  return { pendente: false, erro: 'SoilGrids indisponivel: ' + lastErr, camadas: null };
 }
 function parseGeoJSONFeature(geojson) {
   if (typeof geojson === 'string') {
