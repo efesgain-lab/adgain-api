@@ -4080,23 +4080,27 @@ function _summarizeResultadosForIA(r) {
     lines.push(`\n## TERRAS INDÍGENAS\n${r.terras_indigenas.map(t => `  - ${t.terrai_nom || t.nome} (${t.fase_ti || ''})`).join('\n')}`);
   }
 
-  // 12. REQUERIMENTOS MINERÁRIOS (ANM) — diagnóstico prospectivo
-  if (r?.mineracao?.processos?.length) {
-    lines.push(`\n## REQUERIMENTOS / PROCESSOS MINERÁRIOS (ANM)`);
-    lines.push(`Total: ${r.mineracao.processos.length} processo(s) sobreposto(s) ou vizinho(s)`);
-    // Agrupa por substância para ver padrão regional
+  // 12. PROCESSOS MINERÁRIOS (ANM) — dado JÁ coletado; alimenta a análise geológica.
+  // OBS: o campo correto é `processos_anm` (o antigo `processos` nunca existiu, por isso
+  // o laudo antes ignorava a ANM e mandava "consultar o SIGMINE").
+  const _procsANM = r?.mineracao?.processos_anm || r?.mineracao?.processos || [];
+  if (_procsANM.length) {
+    lines.push(`\n## PROCESSOS MINERÁRIOS ANM QUE SE SOBREPÕEM/TOCAM A PARCELA (dado já coletado — USE-O, não mande consultar a ANM)`);
+    lines.push(`Total: ${_procsANM.length} processo(s) sobre a parcela ou no entorno imediato.`);
     const porSubst = {};
-    r.mineracao.processos.forEach(m => {
+    _procsANM.forEach(m => {
       const k = (m.substancia || m.substância || '?').toString();
       porSubst[k] = (porSubst[k] || 0) + 1;
     });
-    lines.push(`Substâncias requeridas (frequência):`);
+    lines.push(`Substâncias efetivamente requeridas na ANM (frequência):`);
     Object.entries(porSubst).sort((a,b) => b[1]-a[1]).forEach(([sub, n]) => lines.push(`  - ${sub}: ${n} processo(s)`));
-    lines.push(`Top processos:`);
-    r.mineracao.processos.slice(0, 10).forEach(m => {
+    lines.push(`Processos (até 10):`);
+    _procsANM.slice(0, 10).forEach(m => {
       const titular = m.titular || m.nome_titular || '';
-      lines.push(`  - ${m.processo || m.numero}: ${m.substancia || '?'}, fase ${m.fase || '?'}${titular ? ` (titular: ${titular})` : ''}`);
+      lines.push(`  - ${m.numero_processo || m.processo || m.numero || '?'}: ${m.substancia || '?'}, fase ${m.fase || '?'}${titular ? ` (titular: ${titular})` : ''}`);
     });
+  } else {
+    lines.push(`\n## PROCESSOS MINERÁRIOS ANM: nenhum processo se sobrepõe à parcela na base consultada — área livre de direitos minerários conhecidos (dado já verificado; não mande consultar a ANM).`);
   }
 
   // 12b. LOGÍSTICA — cidades, portos, terminais ferroviários, portos secos
@@ -4209,13 +4213,14 @@ app.post('/api/analise-ia', async (req, res) => {
 De forma simples, o que os dados sugerem (relevo, drenagem, solo, hidrogeologia). Sem aprofundar em teoria.
 
 ## Substâncias minerais prováveis
-Liste 2 a 3 substâncias mais prováveis, em ordem de probabilidade (alta/média/baixa), com uma frase de justificativa cada.
+Liste 2 a 3 substâncias mais prováveis, em ordem de probabilidade (alta/média/baixa), com uma frase de justificativa cada. IMPORTANTE: os dados JÁ trazem os PROCESSOS MINERÁRIOS DA ANM que se sobrepõem/tocam a parcela — use-os como evidência direta: cite as substâncias efetivamente requeridas no entorno e diga se a parcela tem direitos minerários conflitantes ou está livre. NUNCA mande "consultar o SIGMINE/ANM": esse dado já foi fornecido e deve ser interpretado aqui.
 
 ## Recomendação
-1 a 2 próximos passos práticos (ex.: geoquímica de solo, verificação de processos na ANM).
+1 a 2 próximos passos práticos de campo (ex.: geoquímica de solo, mapeamento de detalhe). Não repita "consultar a ANM": a situação minerária já foi analisada acima com os dados fornecidos.
 
 REGRAS:
 - Use a BACIA HIDROGRÁFICA, o BIOMA e a UF EXATAMENTE como aparecem nos dados — não invente outra.
+- Use os PROCESSOS MINERÁRIOS ANM fornecidos: se houver processos, nomeie substância/fase/titular; se estiver livre, afirme que a parcela está livre de direitos minerários conhecidos. Não recomende consultar a ANM/SIGMINE — o dado já está no material.
 - Linguagem clara, sem jargão pesado e sem citações acadêmicas.
 - Sem disclaimers genéricos. Seja assertivo mas cauteloso: é um laudo PROSPECTIVO, orienta investigação e não confirma reservas.`;
 
