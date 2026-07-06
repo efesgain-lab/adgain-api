@@ -1386,14 +1386,27 @@ function extrairRegistral(ccirData) {
     }
     return null;
   };
-  const registros = areas.map(a => ({
-    matricula: pick(a, ['matricula', 'matrícula', 'numeromatric', 'nummatric']),
-    cartorio:  pick(a, ['cartorio', 'cartório', 'serventia', 'oficio', 'ofício', 'registro', 'nomecart']),
-    comarca:   pick(a, ['comarca']),
-    livro:     pick(a, ['livro']),
-    folha:     pick(a, ['folha']),
-    area_ha:   pick(a, ['arearegistrada', 'areaha', 'area', 'área']),
-  })).filter(x => x.matricula || x.cartorio);
+  const registros = areas.map(a => {
+    // Schema real do CCIR: matriculaOuTranscricao, cnsOuOficio (CNS da serventia),
+    // municipioCartorio, ufCartorio, livroOuFicha, dataRegistro, registro (R/M/T), area.
+    const cns = a.cnsOuOficio || a.cns || pick(a, ['cnsou', 'oficio', 'ofício']);
+    const mun = a.municipioCartorio || pick(a, ['municipiocart', 'municipio']);
+    const ufc = a.ufCartorio || pick(a, ['ufcart']);
+    const cartorio = cns
+      ? ('Serventia CNS ' + cns + (mun ? ' — ' + mun : '') + (ufc ? '/' + ufc : ''))
+      : (mun ? (mun + (ufc ? '/' + ufc : '')) : pick(a, ['cartorio', 'serventia', 'nomecart']));
+    return {
+      matricula: a.matriculaOuTranscricao || pick(a, ['matricula', 'matríc', 'transcri', 'nummatric']),
+      cartorio,
+      comarca: mun || null,
+      cns: cns || null,
+      ufCartorio: ufc || null,
+      tipo: a.registro || null,
+      livro: a.livroOuFicha || pick(a, ['livro', 'ficha']),
+      dataRegistro: a.dataRegistro || pick(a, ['dataregistro']),
+      area_ha: (a.area != null ? a.area : pick(a, ['arearegistrada', 'areaha', 'área'])),
+    };
+  }).filter(x => x.matricula || x.cartorio);
   return {
     codigoImovel: resumo.codigoImovel,
     denominacao: resumo.denominacao,
