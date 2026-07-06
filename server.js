@@ -1416,6 +1416,27 @@ function extrairRegistral(ccirData) {
   };
 }
 
+// Cruza o CNS da serventia (CCIR) com a base serventias_brasil para trazer o NOME do cartorio.
+async function enriquecerCartorioPorCns(reg) {
+  try {
+    if (!reg || !Array.isArray(reg.registros)) return reg;
+    for (const rr of reg.registros) {
+      const cns = rr.cns ? String(rr.cns).replace(/[^0-9]/g, '') : null;
+      if (!cns) continue;
+      const q = await pool.query(
+        'SELECT cartorio, comarca FROM serventias.serventias_brasil WHERE codigo_cns::text = $1 LIMIT 1',
+        [cns]
+      ).catch(() => ({ rows: [] }));
+      if (q.rows.length && q.rows[0].cartorio) {
+        rr.cartorioNome = q.rows[0].cartorio;
+        if (!rr.comarca && q.rows[0].comarca) rr.comarca = q.rows[0].comarca;
+        rr.cartorio = rr.cartorioNome + (rr.comarca ? ' — ' + rr.comarca : '') + (rr.ufCartorio ? '/' + rr.ufCartorio : '');
+      }
+    }
+  } catch (e) { console.warn('[registral] enriquecer cartorio:', e.message); }
+  return reg;
+}
+
 // Serviço 2 — códigos de imóvel por CPF/CNPJ do titular (retorna array de códigos)
 async function consultarImoveisPorNI(ni) {
   const token = await getSerproToken();
@@ -1531,6 +1552,8 @@ app.post('/api/validar-proprietario', async (req, res) => {
     }
     if (!via && socioConfere) via = 'socio_qsa';
 
+    const _regEnr = extrairRegistral(r.data);
+    await enriquecerCartorioPorCns(_regEnr);
     const resposta = {
       confere: !!(titularConfere || socioConfere),
       via,
@@ -1541,7 +1564,7 @@ app.post('/api/validar-proprietario', async (req, res) => {
       titulares: titulares.map(t => ({ nome: t.nome, cpfCnpj: mascararNI(t.cpfCnpj), tipo: (t.cpfCnpj && t.cpfCnpj.length === 14) ? 'PJ' : 'PF', condicao: t.condicao, percentual: t.percentual, declarante: t.declarante, nacionalidade: t.nacionalidade })),
       empresas: empresas.length ? empresas : undefined,
       imovel: resumoImovelCcir(r.data),
-      registral: extrairRegistral(r.data),
+      registral: _regEnr,
       ambiente,
       fonte: 'Serpro/CCIR + BrasilAPI/QSA'
     };
@@ -1571,6 +1594,7 @@ app.post('/api/registral', async (req, res) => {
     if (r.status === 404) return res.json({ encontrado: false, motivo: 'Imovel nao encontrado no CCIR', codigoImovel: codigo });
     if (!r.ok) return res.status(502).json({ erro: 'Consulta CCIR falhou', status: r.status });
     const reg = extrairRegistral(r.data);
+    await enriquecerCartorioPorCns(reg);
     return res.json({
       encontrado: (reg.registros || []).length > 0,
       codigoImovel: codigo,
