@@ -1528,6 +1528,7 @@ app.post('/api/validar-proprietario', async (req, res) => {
       titulares: titulares.map(t => ({ nome: t.nome, cpfCnpj: mascararNI(t.cpfCnpj), tipo: (t.cpfCnpj && t.cpfCnpj.length === 14) ? 'PJ' : 'PF', condicao: t.condicao, percentual: t.percentual, declarante: t.declarante, nacionalidade: t.nacionalidade })),
       empresas: empresas.length ? empresas : undefined,
       imovel: resumoImovelCcir(r.data),
+      registral: extrairRegistral(r.data),
       ambiente,
       fonte: 'Serpro/CCIR + BrasilAPI/QSA'
     };
