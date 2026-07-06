@@ -1324,17 +1324,83 @@ function resumoImovelCcir(payload) {
   };
 }
 
+// Cache do CCIR (PostGIS) — a consulta ao SERPRO e paga; guardamos por codigo do imovel
+// para que a analise faca a chamada real UMA vez e a validacao de proprietario reuse
+// (sem cobrar de novo). Anuncio sem analise: a validacao faz a unica chamada (cache miss).
+let _ccirCacheReady = false;
+async function ensureCcirCache() {
+  if (_ccirCacheReady) return true;
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS public.ccir_cache (
+      codigo text PRIMARY KEY, status int, data jsonb, fetched_at timestamptz DEFAULT now()
+    )`);
+    _ccirCacheReady = true; return true;
+  } catch (e) { console.warn('[CCIR] cache table indisponivel:', e.message); return false; }
+}
+const CCIR_CACHE_TTL_DAYS = Number(process.env.CCIR_CACHE_TTL_DAYS || 30);
+
 // Serviço 1 — dados do CCIR por código do imóvel (traz titulares). Header x-signature obrigatório.
 async function consultarDadosCcirPorCodigo(codigo) {
+  const cod = soDigitos(codigo);
+  const cacheOk = await ensureCcirCache();
+  if (cacheOk) {
+    try {
+      const hit = await pool.query(
+        "SELECT status, data FROM public.ccir_cache WHERE codigo = $1 AND fetched_at > now() - ($2 || ' days')::interval",
+        [cod, String(CCIR_CACHE_TTL_DAYS)]);
+      if (hit.rows.length) {
+        console.log('[CCIR] cache HIT', cod);
+        const st = hit.rows[0].status;
+        return { status: st, ok: st >= 200 && st < 300, data: hit.rows[0].data, cache: true };
+      }
+    } catch (e) { console.warn('[CCIR] cache read:', e.message); }
+  }
   const token = await getSerproToken();
-  const url = `${SERPRO_CCIR_BASE}/v1/consultarDadosCcirPorCodigoImovel/${encodeURIComponent(soDigitos(codigo))}`;
+  const url = `${SERPRO_CCIR_BASE}/v1/consultarDadosCcirPorCodigoImovel/${encodeURIComponent(cod)}`;
   const resp = await fetch(url, {
     headers: { 'Authorization': `Bearer ${token}`, 'accept': 'application/json', 'x-signature': process.env.SERPRO_CCIR_XSIG || '1' },
     signal: AbortSignal.timeout(15000)
   });
   const txt = await resp.text();
   let data; try { data = JSON.parse(txt); } catch { data = txt; }
+  // grava respostas definitivas (200 ok ou 404 nao-encontrado) para nao cobrar de novo
+  if (cacheOk && (resp.ok || resp.status === 404)) {
+    pool.query(`INSERT INTO public.ccir_cache (codigo, status, data, fetched_at) VALUES ($1,$2,$3, now())
+      ON CONFLICT (codigo) DO UPDATE SET status = EXCLUDED.status, data = EXCLUDED.data, fetched_at = now()`,
+      [cod, resp.status, JSON.stringify(data)]).catch(e => console.warn('[CCIR] cache write:', e.message));
+  }
   return { status: resp.status, ok: resp.ok, data };
+}
+
+// Extrai cartorio + numero da matricula das "areas registradas" do CCIR (declaratorio).
+// Casamento tolerante de nomes de campo (o schema exato varia).
+function extrairRegistral(ccirData) {
+  const resumo = resumoImovelCcir(ccirData);
+  const areas = Array.isArray(resumo.areasRegistradas) ? resumo.areasRegistradas : [];
+  const pick = (o, subs) => {
+    for (const k of Object.keys(o || {})) {
+      if (subs.some(sub => k.toLowerCase().includes(sub))) {
+        const v = o[k];
+        if (v != null && String(v).trim() !== '') return v;
+      }
+    }
+    return null;
+  };
+  const registros = areas.map(a => ({
+    matricula: pick(a, ['matricula', 'matrícula', 'numeromatric', 'nummatric']),
+    cartorio:  pick(a, ['cartorio', 'cartório', 'serventia', 'oficio', 'ofício', 'registro', 'nomecart']),
+    comarca:   pick(a, ['comarca']),
+    livro:     pick(a, ['livro']),
+    folha:     pick(a, ['folha']),
+    area_ha:   pick(a, ['arearegistrada', 'areaha', 'area', 'área']),
+  })).filter(x => x.matricula || x.cartorio);
+  return {
+    codigoImovel: resumo.codigoImovel,
+    denominacao: resumo.denominacao,
+    registros,
+    // fallback: se nao mapeou nada, devolve as areas cruas para inspecao/ajuste
+    areasRegistradasBruto: registros.length ? undefined : areas,
+  };
 }
 
 // Serviço 2 — códigos de imóvel por CPF/CNPJ do titular (retorna array de códigos)
@@ -1482,6 +1548,29 @@ app.post('/api/validar-proprietario', async (req, res) => {
  * os códigos do imóvel (SNCR) das parcelas SIGEF/SNCI correspondentes.
  * Não roda a análise completa e não consome créditos.
  */
+app.post('/api/registral', async (req, res) => {
+  // Cartorio + matricula pelo codigo do imovel, via CCIR (SERPRO) — com cache.
+  try {
+    const codigo = soDigitos(req.body && (req.body.codigoImovel || req.body.codigo));
+    if (!codigo) return res.status(400).json({ erro: 'Informe codigoImovel (codigo SNCR)' });
+    const r = await consultarDadosCcirPorCodigo(codigo);
+    if (r.status === 404) return res.json({ encontrado: false, motivo: 'Imovel nao encontrado no CCIR', codigoImovel: codigo });
+    if (!r.ok) return res.status(502).json({ erro: 'Consulta CCIR falhou', status: r.status });
+    const reg = extrairRegistral(r.data);
+    return res.json({
+      encontrado: (reg.registros || []).length > 0,
+      codigoImovel: codigo,
+      registros: reg.registros,
+      areasRegistradasBruto: reg.areasRegistradasBruto,
+      fonte: 'Serpro/CCIR — areas registradas declaradas ao INCRA',
+      cache: !!r.cache,
+    });
+  } catch (e) {
+    console.error('[registral]', e.message);
+    return res.status(500).json({ erro: e.message });
+  }
+});
+
 app.post('/api/codigo-imovel', async (req, res) => {
   try {
     const { geojson } = req.body;
