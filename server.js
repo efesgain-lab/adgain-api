@@ -1005,12 +1005,45 @@ async function fetchPluviometriaCHIRPS(lat, lng) {
 // ============================================================================
 // SoilGrids v2.0 — ISRIC — propriedades do solo por camada
 // ============================================================================
+let _sgCacheReady = false;
+async function ensureSoilCache() {
+  if (_sgCacheReady) return true;
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS public.soilgrids_cache (
+      grid_key text PRIMARY KEY,
+      lat double precision,
+      lng double precision,
+      camadas jsonb,
+      fetched_at timestamptz DEFAULT now()
+    )`);
+    _sgCacheReady = true;
+    return true;
+  } catch (e) {
+    console.warn('[SoilGrids] cache table indisponivel:', e.message);
+    return false;
+  }
+}
+
 async function fetchSoilGrids(lat, lng) {
   // O relatorio e a coluna de resultados usam APENAS a camada superficial (0-5cm)
-  // com 6 propriedades. Buscar so o necessario deixa a query ~5x mais leve na ISRIC
-  // (menos timeout) e evita passar do limite de requisicoes (HTTP 429).
+  // com 6 propriedades. Buscar so o necessario deixa a query ~5x mais leve na ISRIC.
   const props  = ['clay', 'sand', 'silt', 'soc', 'phh2o', 'bdod'];
   const depths = ['0-5cm'];
+
+  // CACHE persistente (PostGIS): a quimica do solo nao muda. Uma vez obtida a resposta
+  // da ISRIC para uma coordenada (~100m), reaproveitamos para sempre. Assim o Teor de
+  // argila/pH deixa de depender da ISRIC estar no ar em toda analise.
+  const gridKey = lat.toFixed(3) + ',' + lng.toFixed(3);
+  const cacheOk = await ensureSoilCache();
+  if (cacheOk) {
+    try {
+      const hit = await pool.query('SELECT camadas FROM public.soilgrids_cache WHERE grid_key = $1', [gridKey]);
+      if (hit.rows.length && hit.rows[0].camadas && hit.rows[0].camadas['0-5cm']) {
+        console.log('[SoilGrids] cache HIT', gridKey);
+        return { pendente: false, erro: null, camadas: hit.rows[0].camadas, cache: true };
+      }
+    } catch (e) { console.warn('[SoilGrids] cache read:', e.message); }
+  }
 
   const qs = new URLSearchParams();
   qs.append('lon', lng.toFixed(6));
@@ -1018,7 +1051,6 @@ async function fetchSoilGrids(lat, lng) {
   props.forEach(p  => qs.append('property', p));
   depths.forEach(d => qs.append('depth', d));
   qs.append('value', 'mean');
-
   const url = 'https://rest.isric.org/soilgrids/v2.0/properties/query?' + qs.toString();
 
   const factor = { clay: 0.1, sand: 0.1, silt: 0.1, soc: 0.1, phh2o: 0.1, nitrogen: 0.01, bdod: 0.01 };
@@ -1030,7 +1062,7 @@ async function fetchSoilGrids(lat, lng) {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       console.log('[SoilGrids] fetch tentativa ' + attempt + '/' + MAX_ATTEMPTS, url.slice(0, 80));
-      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(url, { signal: AbortSignal.timeout(25000) });
       if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
       const data = await resp.json();
 
@@ -1048,12 +1080,20 @@ async function fetchSoilGrids(lat, lng) {
       }
       if (!camadas['0-5cm']) throw new Error('resposta sem camada 0-5cm');
       console.log('[SoilGrids] OK na tentativa ' + attempt);
+      if (cacheOk) {
+        pool.query(
+          `INSERT INTO public.soilgrids_cache (grid_key, lat, lng, camadas, fetched_at)
+           VALUES ($1,$2,$3,$4, now())
+           ON CONFLICT (grid_key) DO UPDATE SET camadas = EXCLUDED.camadas, fetched_at = now()`,
+          [gridKey, lat, lng, JSON.stringify(camadas)]
+        ).then(() => console.log('[SoilGrids] cache SAVE', gridKey))
+         .catch(e => console.warn('[SoilGrids] cache write:', e.message));
+      }
       return { pendente: false, erro: null, camadas };
     } catch (e) {
       lastErr = e.message;
       console.warn('[SoilGrids] tentativa ' + attempt + ' falhou:', e.message);
       if (attempt < MAX_ATTEMPTS) {
-        // backoff crescente (3s, 6s) — da tempo pro rate-limit da ISRIC liberar
         await new Promise(res => setTimeout(res, attempt * 3000));
       }
     }
