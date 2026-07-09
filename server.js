@@ -1897,21 +1897,41 @@ app.post('/api/analises', async (req, res) => {
       analyses['9.1_fundiaria'].snci = snciResult.rows;
     }
 
-    // 9.2 Registral (Serventias by municipality)
+    // 9.2 Registral — Serventias COMPETENTES: a base serventias_brasil possui o poligono de
+    // abrangencia (geom) de cada serventia. "Quais cartorios atendem a parcela" = ST_Intersects.
+    // Fallback: se nenhum poligono cobrir a parcela, usa as serventias da comarca do municipio.
     analyses['9.2_registral'] = {
       nome: 'Registral',
       serventias: [],
-      message: 'Dados de serventia disponíveis por consulta específica',
+      mensagem: null,
     };
 
-    if (municipio.municipio !== 'Desconhecido') {
-      let serventiaResult = await safeQuery(`
-        SELECT id, cartorio, codigo_cns as cns, comarca
+    {
+      const servEspacial = await safeQuery(`
+        SELECT id, cartorio, codigo_cns, comarca, uf, abrangen, obs
         FROM serventias.serventias_brasil
-        WHERE comarca ILIKE $1 AND UPPER(uf) = UPPER($2)
-        LIMIT 10
-      `, [municipio.municipio, municipio.uf]);
-      analyses['9.2_registral'].serventias = serventiaResult.rows;
+        WHERE geom && ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          AND ST_Intersects(
+            CASE WHEN ST_SRID(geom) != ${SRID} THEN ST_SetSRID(geom, ${SRID}) ELSE geom END,
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674)
+          )
+        ORDER BY cartorio
+        LIMIT 20
+      `, [geojsonStr]);
+
+      if (servEspacial.rows.length) {
+        analyses['9.2_registral'].serventias = servEspacial.rows;
+        analyses['9.2_registral'].mensagem = 'Sobreposição direta';
+      } else if (municipio.municipio !== 'Desconhecido') {
+        const servComarca = await safeQuery(`
+          SELECT id, cartorio, codigo_cns, comarca, uf, abrangen, obs
+          FROM serventias.serventias_brasil
+          WHERE comarca ILIKE $1 AND UPPER(uf) = UPPER($2)
+          LIMIT 10
+        `, [municipio.municipio, municipio.uf]);
+        analyses['9.2_registral'].serventias = servComarca.rows;
+        analyses['9.2_registral'].mensagem = 'Serventias da comarca do município (sem sobreposição direta)';
+      }
     }
 
     // ── PARALELIZADO: 5 queries grandes (solo + soloGeom + bioma + geologia + geoloGeom) ──
@@ -3787,7 +3807,7 @@ app.post('/api/analises', async (req, res) => {
         snci:  analyses['9.1_fundiaria'].snci,
         car:   analyses['9.13_car'].area_imovel,
       },
-      registral:            { encontrado: analyses['9.2_registral'].serventias.length > 0, cartorios: analyses['9.2_registral'].serventias },
+      registral:            { encontrado: analyses['9.2_registral'].serventias.length > 0, cartorios: analyses['9.2_registral'].serventias, mensagem: analyses['9.2_registral'].mensagem },
       solo:                 analyses['9.3_solo'].data,
       bioma:                analyses['9.4_bioma'].data,
       geologia:             analyses['9.5_geologia'].data,
