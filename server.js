@@ -1476,7 +1476,7 @@ function socioBateNI(socioDoc, ni) {
   }
   return false;
 }
-// Consulta QSA em provedores públicos gratuitos, em cascata (User-Agent de navegador evita bloqueio 403 de datacenter).
+// Consulta QSA em provedores públicos gratuitos, em cascata (BrasilAPI + cnpj.ws; User-Agent de navegador evita bloqueio 403 de datacenter).
 async function consultarQsaBrasilApi(cnpj) {
   const c = soDigitos(cnpj);
   const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
