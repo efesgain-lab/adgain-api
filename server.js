@@ -1516,7 +1516,9 @@ app.post('/api/validar-proprietario', async (req, res) => {
     const ni = soDigitos(req.body && req.body.ni);
     const nome = (req.body && req.body.nome) ? String(req.body.nome) : '';
     const codigoImovel = soDigitos(req.body && req.body.codigoImovel);
-    const debug = req.body && (req.body.debug === true || req.body.debug === 1 || req.body.debug === '1');
+    // Payload BRUTO (docs sem máscara) só é liberado se SERPRO_DEBUG_KEY estiver definido no ambiente
+    // E a requisição enviar exatamente essa chave. Sem a env, o debug fica desligado (padrão seguro em produção).
+    const debug = !!(process.env.SERPRO_DEBUG_KEY && req.body && req.body.debug === process.env.SERPRO_DEBUG_KEY);
     if (!codigoImovel) return res.status(400).json({ erro: 'Informe codigoImovel (código SNCR de 13 dígitos)' });
     const ambiente = SERPRO_CCIR_BASE.includes('trial') ? 'trial' : 'producao';
     const r = await consultarDadosCcirPorCodigo(codigoImovel);
@@ -1568,7 +1570,7 @@ app.post('/api/validar-proprietario', async (req, res) => {
       ambiente,
       fonte: 'Serpro/CCIR + BrasilAPI/QSA'
     };
-    // debug:true → payloads brutos (CCIR + QSA). Uso só em teste; remover/gate antes do fluxo público.
+    // Payloads brutos (CCIR + QSA, com documentos SEM máscara) — liberados apenas via SERPRO_DEBUG_KEY.
     if (debug) { resposta.bruto = r.data; resposta.qsaBruto = empresasRaw; }
     return res.json(resposta);
   } catch (e) {
