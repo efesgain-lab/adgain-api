@@ -3222,14 +3222,18 @@ app.post('/api/analises', async (req, res) => {
       else if (_decl <= 20) scDecl = 30 - (_decl - 13) * 4;
       else scDecl = 0;
 
-      // (b) Solo — 20%
-      const _hasArgila = _solosNomes.some(n => /LATOSSOLO|ARGISSOLO|NITOSSOLO|CAMBISSOLO/.test(n));
-      const _hasArenoso = _solosNomes.some(n => /NEOSSOLO\s+QUARTZAR/.test(n));
-      const _hasGleico = _solosNomes.some(n => /GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/.test(n));
+      // (b) Solo — 20% — PONDERADO pelo percentual de área de cada classe.
+      // (antes, 1,29% de Organossolo derrubava o score para 25 e disparava
+      // alerta CRÍTICO "GLEISSOLO/PLANOSSOLO" numa parcela 98,7% Latossolo)
+      const _pctSolo = (re) => _solos.reduce((s, x) => re.test(String(x.nome || '').toUpperCase()) ? s + Number(x.percentual || 0) : s, 0);
+      const _pctArgila  = _pctSolo(/LATOSSOLO|ARGISSOLO|NITOSSOLO|CAMBISSOLO/);
+      const _pctArenoso = _pctSolo(/NEOSSOLO\s+QUARTZAR/);
+      const _pctGleico  = _pctSolo(/GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/);
       let scSolo = 60;
-      if (_hasArgila && !_hasArenoso) scSolo = 90;
-      if (_hasArenoso) scSolo = 45;
-      if (_hasGleico) scSolo = 25;
+      if (_pctArgila >= 50) scSolo = 90;
+      if (_pctArenoso >= 30) scSolo = 45;
+      if (_pctGleico >= 30) scSolo = 25;
+      else if (_pctGleico >= 10) scSolo = Math.min(scSolo, 55);
 
       // (c) Água — 25%
       let scAgua = 30;
@@ -3330,8 +3334,14 @@ app.post('/api/analises', async (req, res) => {
       const restr = [];
       if (_decl > 13) restr.push({ severidade: 'critica', texto: `Declividade média ${_decl.toFixed(1)}% — acima do limite técnico de 13% para pivô central` });
       else if (_decl > 8) restr.push({ severidade: 'atencao', texto: `Declividade média ${_decl.toFixed(1)}% — operação possível mas com custo de energia maior` });
-      if (_hasArenoso) restr.push({ severidade: 'atencao', texto: 'NEOSSOLO QUARTZARÊNICO presente — risco de lixiviação' });
-      if (_hasGleico) restr.push({ severidade: 'critica', texto: 'GLEISSOLO/PLANOSSOLO — má drenagem natural, pivô contraindicado' });
+      // Alertas de solo com o NOME REAL da classe encontrada e o percentual da
+      // área — traços (<10%) não geram alerta; 10-30% vira atenção localizada.
+      const _nomesSolo = (re) => [...new Set(_solos
+        .filter(x => re.test(String(x.nome || '').toUpperCase()))
+        .map(x => String(x.nome || '').split(' - ').pop().split('(')[0].trim()))].join(', ');
+      if (_pctArenoso >= 20) restr.push({ severidade: 'atencao', texto: `${_nomesSolo(/NEOSSOLO\s+QUARTZAR/) || 'Neossolo Quartzarênico'} em ${_pctArenoso.toFixed(1)}% da área — risco de lixiviação` });
+      if (_pctGleico >= 30) restr.push({ severidade: 'critica', texto: `${_nomesSolo(/GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/)} em ${_pctGleico.toFixed(1)}% da área — má drenagem natural, pivô contraindicado nessa porção` });
+      else if (_pctGleico >= 10) restr.push({ severidade: 'atencao', texto: `${_nomesSolo(/GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/)} em ${_pctGleico.toFixed(1)}% da área — má drenagem localizada; excluir do projeto de pivô` });
       if (deficit < 100) restr.push({ severidade: 'atencao', texto: `Pluviometria ${Math.round(_pma)}mm/ano — ROI baixo em região úmida` });
       if (!_cursos && !_aqPoroso.length && !_aqFraturado.length) restr.push({ severidade: 'critica', texto: 'Nenhuma fonte de água identificada — captação externa necessária' });
       if (_areaHa < 30) restr.push({ severidade: 'atencao', texto: `Parcela com ${_areaHa.toFixed(0)}ha — CAPEX alto, considerar gotejamento ou aspersão linear` });
@@ -3355,7 +3365,7 @@ app.post('/api/analises', async (req, res) => {
         const motivos = [];
         if (_pma < plu_min - 200 && iap < 50) { apt = 'baixa'; motivos.push(`Pluviometria baixa sem irrigação`); }
         if (_decl > decl_max) { apt = 'baixa'; motivos.push(`Declividade ${_decl}% > limite ${decl_max}%`); }
-        if (exige_argiloso && _hasArenoso && !_hasArgila) { apt = apt === 'alta' ? 'media' : 'baixa'; motivos.push('Solo arenoso desfavorece'); }
+        if (exige_argiloso && _pctArenoso >= 30 && _pctArgila < 50) { apt = apt === 'alta' ? 'media' : 'baixa'; motivos.push('Solo arenoso desfavorece'); }
         return { cultura: nome, aptidao: apt, observacoes: motivos.length ? motivos.join('; ') : observ };
       };
       analyses['9.15_hidrologia_pivos'].aptidao_culturas = [
