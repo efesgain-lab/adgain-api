@@ -4494,8 +4494,15 @@ const laudoCache = new Map();
 const LAUDO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const LAUDO_CACHE_MAX = 200;
 
-function _laudoCacheKey(dadosCompactos) {
-  return require('crypto').createHash('sha1').update(dadosCompactos).digest('hex');
+function _laudoCacheKey(resultados, dadosCompactos) {
+  // Chavear pela GEOMETRIA da parcela: o frontend altera campos de `resultados`
+  // (area_total_ha recalculada, registralSerpro) antes de reenviar ao
+  // /api/analise-ia — o que mudava o hash do resumo e furava o cache do
+  // prefetch. parcel_geojson passa pelo frontend intocado.
+  const base = resultados?.parcel_geojson
+    ? JSON.stringify(resultados.parcel_geojson)
+    : dadosCompactos;
+  return require('crypto').createHash('sha1').update(base).digest('hex');
 }
 
 /**
@@ -4507,7 +4514,7 @@ async function _gerarLaudoIA(resultados) {
   if (!client) return null;
 
   const dadosCompactos = _summarizeResultadosForIA(resultados);
-  const key = _laudoCacheKey(dadosCompactos);
+  const key = _laudoCacheKey(resultados, dadosCompactos);
 
   const hit = laudoCache.get(key);
   if (hit && Date.now() - hit.t < LAUDO_CACHE_TTL_MS) {
