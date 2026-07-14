@@ -2265,7 +2265,9 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].bacias = baciasRows;
 
     // ── PARALELIZADO: 8 queries de hidrografia (todas independentes — mesmo geojsonStr) ──
-    const RAIO_DRENAGEM_KM = 25;
+    // Região de análise da drenagem: PARCELA + BUFFER (decisão de produto 13/07/2026 —
+    // o raio regional de 25 km não tem necessidade e custava caro em raster/vetores).
+    const HIDRO_BUFFER_M = parseInt(process.env.HIDRO_BUFFER_M || '200', 10);
     console.time('[par] hidrografia');
     const [cursosResult, riosGeomRes, padraoAgg, terrainAgg, radialAgg, compParcelRes, nomesRes, ordensRes] = await Promise.all([
       // Q-cursos: count de cursos d'água
@@ -2285,16 +2287,16 @@ app.post('/api/analises', async (req, res) => {
         ORDER BY COALESCE(c.nuordemcda, 0) DESC NULLS LAST
         LIMIT 2000
       `, [geojsonStr]),
-      // Q-padrao: estatísticas de azimute/convergência/bimodalidade no raio de 25km
+      // Q-padrao: estatísticas de azimute/convergência/bimodalidade na parcela + buffer
       safeQuery(`
         WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
         centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
-        buffer25 AS (
-          SELECT ST_Expand(c, ${RAIO_DRENAGEM_KM} / 111.0) AS bg FROM centroid_pt
+        buffer_zona AS (
+          SELECT ST_SetSRID(ST_Buffer(g::geography, ${HIDRO_BUFFER_M})::geometry, 4674) AS bg FROM parcel
         ),
         raw_segs AS (
           SELECT (ST_Dump(c.geom)).geom AS seg
-          FROM hidrografia.geoft_bho_2017_curso_dagua c, buffer25 bb
+          FROM hidrografia.geoft_bho_2017_curso_dagua c, buffer_zona bb
           WHERE c.geom && bb.bg AND ST_Intersects(c.geom, bb.bg)
         ),
         courses AS (
@@ -2328,24 +2330,24 @@ app.post('/api/analises', async (req, res) => {
         )
         SELECT g.total, g.std_az, g.rayleigh_r, g.mean_conv, g.mean_tang, g.total_len_km,
           COALESCE(ABS(t.bin1 - t.bin2), 0) AS bin_sep,
-          COALESCE((t.cnt1 + t.cnt2)::float / NULLIF(g.total, 0), 0) AS bimodal_frac
+          COALESCE((t.cnt1 + t.cnt2)::float / NULLIF(g.total, 0), 0) AS bimodal_frac,
+          (SELECT ST_Area(bg::geography) / 1000000.0 FROM buffer_zona) AS buf_area_km2
         FROM global_stats g, top2 t
       `, [geojsonStr]),
-      // Q-terrain: relevo regional
+      // Q-terrain: relevo local (parcela + buffer — era um círculo de 25 km)
       safeQuery(`
         WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
-        centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
-        buffer25 AS (SELECT ST_Buffer(c::geography, ${RAIO_DRENAGEM_KM * 1000})::geometry AS bg FROM centroid_pt),
-        clipped AS (SELECT ST_Clip(r.rast, b.bg, TRUE) AS rc FROM altitude_br.altitude_raster r, buffer25 b WHERE ST_Intersects(r.rast, b.bg)),
+        buffer_zona AS (SELECT ST_SetSRID(ST_Buffer(g::geography, ${HIDRO_BUFFER_M})::geometry, 4674) AS bg FROM parcel),
+        clipped AS (SELECT ST_Clip(r.rast, b.bg, TRUE) AS rc FROM altitude_br.altitude_raster r, buffer_zona b WHERE ST_Intersects(r.rast, b.bg)),
         tstats AS (SELECT (ST_SummaryStats(rc, 1, TRUE)).* FROM clipped WHERE rc IS NOT NULL)
         SELECT COALESCE(MIN(min), 0) AS min_alt, COALESCE(MAX(max), 0) AS max_alt, COALESCE(MAX(max) - MIN(min), 0) AS relief_m FROM tstats
       `, [geojsonStr]),
-      // Q-radial: gradiente radial
+      // Q-radial: gradiente radial (anel na borda do buffer — era 15 km)
       safeQuery(`
         WITH parcel AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g),
         centroid_pt AS (SELECT ST_Centroid(g) AS c FROM parcel),
         ring_pts AS (
-          SELECT d.b AS bearing, ST_Project(cp.c::geography, 15000, radians(d.b))::geometry AS pt
+          SELECT d.b AS bearing, ST_Project(cp.c::geography, ${HIDRO_BUFFER_M}, radians(d.b))::geometry AS pt
           FROM centroid_pt cp CROSS JOIN (VALUES (0),(45),(90),(135),(180),(225),(270),(315)) AS d(b)
         ),
         ring_alts AS (
@@ -2555,7 +2557,8 @@ app.post('/api/analises', async (req, res) => {
     const bimodalFrac  = parseFloat(padraoAgg.rows[0]?.bimodal_frac || 0);
     const reliefM      = parseFloat(terrainAgg.rows[0]?.relief_m   || 0);
     const radialGrad   = parseFloat(radialAgg.rows[0]?.radial_grad  || 0);
-    const bufAreaKm2   = Math.PI * RAIO_DRENAGEM_KM * RAIO_DRENAGEM_KM;  // ~1963 km²
+    // Área REAL da região analisada (parcela + buffer), retornada pela Q-padrao
+    const bufAreaKm2   = parseFloat(padraoAgg.rows[0]?.buf_area_km2 || 0);
     const streamDens   = bufAreaKm2 > 0 ? totalLenKm / bufAreaKm2 : 0;
     const lenKm        = parseFloat(((compParcelRes.rows[0]?.len_m || 0) / 1000).toFixed(2));
     // spread circular: 0 = todos paralelos, 1 = aleatório — mais robusto que stdAz puro
@@ -2625,7 +2628,10 @@ app.post('/api/analises', async (req, res) => {
 
     analyses['9.10_hidrografia'].padrao_drenagem = {
       padrao, descricao,
-      raio_analise_km:   RAIO_DRENAGEM_KM,
+      // Região de análise agora é a parcela + buffer (não mais raio regional)
+      raio_analise_km:   HIDRO_BUFFER_M / 1000,
+      buffer_m:          HIDRO_BUFFER_M,
+      area_analisada_km2: Math.round(bufAreaKm2 * 100) / 100,
       total_raio:        totalRaio,
       desvio_azimuth:    stdAz,
       rayleigh_r:        Math.round(rayleighR * 1000) / 1000,
