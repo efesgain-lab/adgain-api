@@ -22,6 +22,11 @@ const pool = new Pool({
   statement_timeout: 15000,
   query_timeout: 16000,
   family: 4,
+  // PERF: /api/analises dispara varios estagios em paralelo; o default (10)
+  // estrangulava a concorrencia. keepAlive evita renegociar TCP/TLS por query
+  // (relevante com DB em outra regiao).
+  max: parseInt(process.env.DB_POOL_MAX || '20'),
+  keepAlive: true,
 });
 
 const SRID = 4674; // SIRGAS 2000
@@ -1764,7 +1769,27 @@ app.post('/api/analises', async (req, res) => {
 
     const analyses = {};
 
+    // ═══ PERF (A1): os estágios de análise são independentes entre si — cada um
+    // escreve apenas sua(s) chave(s) em `analyses` — e rodam em PARALELO.
+    // A ordem interna de cada estágio foi preservada; apenas a espera entre
+    // estágios foi removida. Conformidade (9.13d) depende de CAR+PRODES+bioma
+    // e roda depois, na fase 2.
+    const _stages = [];
+    // Variáveis escritas por estágios e lidas na resposta/fase 2 (içadas):
+    let _riosGeomFinal = null;
+    let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', media_mensal: null };
+    let solo = { pendente: false, erro: 'Coordenadas não disponíveis', camadas: null };
+    let soilGrids = null;
+    let infraestrutura_proxima = { raio_km: 200, camadas: [] };
+    let terras_quilombolas = [];
+    // Inits içados: o estágio de análises adicionais escreve campos em
+    // 9.5_geologia — inicializar aqui evita corrida com o estágio de solo/geo.
+    analyses['9.3_solo'] = { nome: 'Solo', data: [] };
+    analyses['9.4_bioma'] = { nome: 'Bioma', data: [] };
+    analyses['9.5_geologia'] = { nome: 'Geologia', data: [] };
+
     // 9.1 Fundiária (SIGEF + SNCI)
+    _stages.push((async () => {
     analyses['9.1_fundiaria'] = {
       nome: 'Fundiária',
       sigef: [],
@@ -1901,7 +1926,10 @@ app.post('/api/analises', async (req, res) => {
 
     // 9.2 Registral — Serventias COMPETENTES: a base serventias_brasil possui o poligono de
     // abrangencia (geom) de cada serventia. "Quais cartorios atendem a parcela" = ST_Intersects.
-    // Fallback: se nenhum poligono cobrir a parcela, usa as serventias da comarca do municipio.
+    })()); // fim estágio 9.1 fundiária
+
+    // 9.2 Registral — fallback: se nenhum poligono cobrir a parcela, usa as serventias da comarca do municipio.
+    _stages.push((async () => {
     analyses['9.2_registral'] = {
       nome: 'Registral',
       serventias: [],
@@ -1936,10 +1964,11 @@ app.post('/api/analises', async (req, res) => {
       }
     }
 
-    // ── PARALELIZADO: 5 queries grandes (solo + soloGeom + bioma + geologia + geoloGeom) ──
-    analyses['9.3_solo'] = { nome: 'Solo', data: [] };
-    analyses['9.4_bioma'] = { nome: 'Bioma', data: [] };
-    analyses['9.5_geologia'] = { nome: 'Geologia', data: [] };
+    })()); // fim estágio 9.2 registral
+
+    // 9.3-9.5 Solo + Bioma + Geologia — 5 queries grandes em paralelo
+    // (inits de 9.3/9.4/9.5 içados para o preâmbulo)
+    _stages.push((async () => {
 
     console.time('[par] solo+bioma+geol');
     const [soloResult, soloGeomRes, biomaResult, geologiaResult, geoloGeomRes] = await Promise.all([
@@ -2066,7 +2095,10 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.5_geologia'].falhas      = [];
     analyses['9.5_geologia'].fraturas    = [];
 
-    // ── PARALELIZADO: ANM + Embargos (independentes entre si) ──
+    })()); // fim estágio 9.3-9.5 solo/bioma/geologia
+
+    // 9.6-9.7 ANM + Embargos (independentes entre si)
+    _stages.push((async () => {
     analyses['9.6_mineracao'] = { nome: 'Mineração', processes: [], occurrences: [] };
     analyses['9.7_embargos'] = { nome: 'Embargos', data: [] };
 
@@ -2103,7 +2135,10 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.6_mineracao'].occurrences = [];
     analyses['9.7_embargos'].data = embargosResult.rows;
 
+    })()); // fim estágio 9.6-9.7 mineração/embargos
+
     // 9.8 Terras Indígenas
+    _stages.push((async () => {
     analyses['9.8_terras_indigenas'] = { nome: 'Terras Indígenas', data: [] };
     let tisResult = await safeQuery(`
       SELECT id, terrai_nome as nome, superficie_perimetro_ha as superficie,
@@ -2133,7 +2168,10 @@ app.post('/api/analises', async (req, res) => {
         const _lats =_allCoords.map(c => c[1]);
         const _bboxStr = Math.min(..._lons)+','+Math.min(..._lats)+','+Math.max(..._lons)+','+Math.max(..._lats);
         const _ctrl = new AbortController();
-        const _tmr = setTimeout(() => _ctrl.abort(), 15000);
+        // PERF: 4s (era 15s). Este fallback roda em quase toda analise (parcelas
+        // sem TI no DB) e fica no caminho critico — um geoserver do governo lento
+        // nao pode segurar a analise inteira; sem resposta em 4s, segue sem TI WFS.
+        const _tmr = setTimeout(() => _ctrl.abort(), parseInt(process.env.FUNAI_WFS_TIMEOUT_MS || '4000'));
         const _wfsUrl = 'https://geoserver.funai.gov.br/geoserver/Funai/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=Funai:tis_poligonais&outputFormat=application/json&BBOX='+_bboxStr+',EPSG:4674&count=50';
         const _wfsResp = await fetch(_wfsUrl, { signal: _ctrl.signal });
         clearTimeout(_tmr);
@@ -2155,7 +2193,10 @@ app.post('/api/analises', async (req, res) => {
     }
     analyses['9.8_terras_indigenas'].data = tisResult.rows;
 
-    // ── PARALELIZADO: UCs + muniProx + 5 bacias (níveis 2-6) — todas independentes ──
+    })()); // fim estágio 9.8 terras indígenas
+
+    // 9.9-9.10 UCs + muniProx + bacias + hidrografia
+    _stages.push((async () => {
     analyses['9.9_ucs'] = { nome: 'Unidades de Conservação', data: [] };
     analyses['localizacao_municipios_proximos'] = [];
     analyses['9.10_hidrografia'] = { nome: 'Hidrografia', bacias: [], cursos_agua_count: 0, rica_em_agua: false, padrao_drenagem: null, nomes_rios: [], comprimento_influencia_km: 0, rios_geom: [] };
@@ -2597,7 +2638,10 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.10_hidrografia'].comprimento_influencia_km = lenKm;
     analyses['9.10_hidrografia'].nomes_rios = (nomesRes.rows || []).map(r => r.nome).filter(Boolean);
 
-    // ── PARALELIZADO: riosGeomResult + altitude + carbono + aquíferos (4 blocos independentes) ──
+    })()); // fim estágio 9.9-9.10 ucs/hidrografia
+
+    // 9.11-9.13b riosGeom + altitude + carbono + aquíferos
+    _stages.push((async () => {
     analyses['9.11_altitude'] = { nome: 'Altitude', min_m: null, max_m: null, media_m: null, ponto_m: null, grid: [] };
     analyses['9.12_carbono'] = { nome: 'Carbono', total_toneladas: null };
     analyses['9.13b_aquiferos'] = { nome: 'Aquíferos', poroso: [], fraturado: [], carstico: [], data: [] };
@@ -2719,8 +2763,9 @@ app.post('/api/analises', async (req, res) => {
     ]);
     console.timeEnd('[par] riosgeom+altitude+carbono+aquiferos');
 
-    // Processa riosGeom
-    analyses['9.10_hidrografia'].rios_geom = riosGeomResult.rows || [];
+    // Processa riosGeom — no código sequencial original esta atribuição vinha
+    // DEPOIS da do estágio de hidrografia e prevalecia; aplicada na fase 2.
+    _riosGeomFinal = riosGeomResult.rows || [];
 
     // Processa altitude
     if (altitudeResult.rows[0]) {
@@ -2782,7 +2827,10 @@ app.post('/api/analises', async (req, res) => {
     }
     console.log('[AQUIFEROS] poroso:', analyses['9.13b_aquiferos'].poroso.length, 'fraturado:', analyses['9.13b_aquiferos'].fraturado.length, 'carstico:', analyses['9.13b_aquiferos'].carstico.length);
 
+    })()); // fim estágio 9.11-9.13b altitude/carbono/aquíferos
+
     // 9.13 CAR (área, APP, reserva legal, vegetação nativa)
+    _stages.push((async () => {
     analyses['9.13_car'] = {
       nome: 'CAR',
       area_imovel: [],
@@ -2946,7 +2994,10 @@ app.post('/api/analises', async (req, res) => {
 
     // (legacy aquiferos block removed - now at line ~1602)
 
-    // 9.13b' SILOS / ARMAZÉNS PRÓXIMOS (CONAB SICARM)
+    })()); // fim estágio 9.13 CAR
+
+    // 9.13e SILOS / ARMAZÉNS PRÓXIMOS (CONAB SICARM)
+    _stages.push((async () => {
     analyses['9.13e_silos'] = {
       nome: 'Silos / Armazéns próximos',
       raio_km: 50,
@@ -2994,7 +3045,10 @@ app.post('/api/analises', async (req, res) => {
       }
     }
 
+    })()); // fim estágio 9.13e silos
+
     // 9.13f LOGÍSTICA — distâncias até cidades, portos e terminais
+    _stages.push((async () => {
     analyses['9.13f_logistica'] = {
       nome: 'Logística',
       cidades_proximas: [],
@@ -3110,7 +3164,10 @@ app.post('/api/analises', async (req, res) => {
 
     } catch (e) { console.warn('[LOGI]', e.message); }
 
+    })()); // fim estágio 9.13f logística
+
     // 9.15 HIDROLOGIA + APTIDÃO PIVÔS CENTRAIS — análise integrada
+    _stages.push((async () => {
     analyses['9.15_hidrologia_pivos'] = {
       nome: 'Hidrologia e Aptidão para Pivôs Centrais',
       iap_score: 0,
@@ -3307,7 +3364,10 @@ app.post('/api/analises', async (req, res) => {
       };
     } catch (e) { console.error('[HIDRO_PIVOS]', e.message); }
 
+    })()); // fim estágio 9.15 pivôs
+
     // 9.13c PRODES + DETER (desmatamento INPE via WFS TerraBrasilis)
+    _stages.push((async () => {
     analyses['9.13c_prodes_deter'] = {
       nome: 'Desmatamento (PRODES/DETER)',
       prodes: [],
@@ -3377,9 +3437,12 @@ app.post('/api/analises', async (req, res) => {
     } catch (e) {
       console.warn('[prodes-deter] erro:', e.message);
     }
+    })()); // fim estágio 9.13c prodes/deter
 
     // 9.13d ANÁLISE DE CONFORMIDADE AMBIENTAL (Código Florestal + CAR × PRODES × DETER)
-    {
+    // Computo puro (sem queries) que LÊ os resultados de CAR + PRODES + bioma —
+    // por isso é uma função executada na FASE 2, depois do Promise.all.
+    const _runConformidade = () => {
       const ufAmazoniaLegal = new Set(['AC','AP','AM','MA','MT','PA','RO','RR','TO']);
       const uf = (municipio.uf || '').toUpperCase();
       const inAL = ufAmazoniaLegal.has(uf);
@@ -3516,9 +3579,10 @@ app.post('/api/analises', async (req, res) => {
         desbalanco_pct: parseFloat((desbalanco * 100).toFixed(1)),
         flags,
       };
-    }
+    }; // fim _runConformidade (chamada na fase 2)
 
     // 9.14 Análises Adicionais (Geologia Estrutural + Ocorrências + Tectônica)
+    _stages.push((async () => {
     analyses['9.14_analises_adicionais'] = {
       nome: 'Análises Adicionais',
       geologia: {
@@ -3616,8 +3680,9 @@ app.post('/api/analises', async (req, res) => {
     analyses['9.14_analises_adicionais'].tectonicas.suture_zones = sutureResult.rows;
 
     // 9.15 Pluviometria (CHIRPS 30 anos) + 9.16 Solo (SoilGrids)
-    let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', media_mensal: null };
-    let solo = { pendente: false, erro: 'Coordenadas não disponíveis', camadas: null };
+    // (declarações içadas para o preâmbulo — aqui só re-inicializa)
+    pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', media_mensal: null };
+    solo = { pendente: false, erro: 'Coordenadas não disponíveis', camadas: null };
     try {
       const centroidForPluvio = municipio.centroid ? JSON.parse(municipio.centroid) : null;
       if (centroidForPluvio) {
@@ -3694,7 +3759,7 @@ app.post('/api/analises', async (req, res) => {
     }
 
         // 9.16 SoilGrids v2.0 - reutiliza fetchSoilGrids (evita 2a chamada ao ISRIC)
-        let soilGrids = null;
+        soilGrids = null; // (içado para o preâmbulo)
         if (solo && solo.camadas && solo.camadas['0-5cm']) {
           const d = solo.camadas['0-5cm'];
           soilGrids = {
@@ -3713,7 +3778,7 @@ app.post('/api/analises', async (req, res) => {
     // ===== Infraestrutura próxima (raio 200 km) — silos, ferrovias, frigoríficos, usinas, aeródromos, quilombolas =====
     // Agnóstico de schema: retorna atributos via to_jsonb (não depende dos nomes de coluna de cada tabela).
     // Prefiltro && ST_Expand (usa índice GIST) + ST_DWithin geography (200km exatos). Resiliente: tabela ausente → 0.
-    let infraestrutura_proxima = { raio_km: 200, camadas: [] };
+    infraestrutura_proxima = { raio_km: 200, camadas: [] }; // (içado)
     try {
       const _proxLayers = [
         // Silos: caso especial — raio 50km e os 10 mais próximos (com todas as colunas via props)
@@ -3770,7 +3835,7 @@ app.post('/api/analises', async (req, res) => {
     }
 
     // ===== Territórios Quilombolas — só se INCIDE na parcela ou CONFINA (até 1km); com geom p/ mapa =====
-    let terras_quilombolas = [];
+    terras_quilombolas = []; // (içado)
     try {
       const _qr = await pool.query(`
         WITH parc AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), 4674) AS g)
@@ -3800,6 +3865,22 @@ app.post('/api/analises', async (req, res) => {
     } catch (e) {
       console.warn('[quilombola] falhou:', e.message);
     }
+    })()); // fim estágio 9.14/adicionais/pluviometria/infra/quilombolas
+
+    // ═══ FASE PARALELA: aguarda todos os estágios independentes ═══
+    console.time('[analises] fase paralela');
+    await Promise.all(_stages);
+    console.timeEnd('[analises] fase paralela');
+
+    // ═══ FASE 2 (sequencial) ═══
+    // rios_geom: no código sequencial original, o estágio de altitude
+    // sobrescrevia o valor escrito pela hidrografia — preserva essa semântica.
+    if (_riosGeomFinal !== null) {
+      analyses['9.10_hidrografia'].rios_geom = _riosGeomFinal;
+    }
+
+    // Conformidade ambiental — depende de CAR + PRODES + bioma (só computo)
+    _runConformidade();
 
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
     const centroidParsed = municipio.centroid ? JSON.parse(municipio.centroid) : null;
@@ -3898,6 +3979,18 @@ app.post('/api/analises', async (req, res) => {
     const _resp = { sucesso: true, gerado_em: new Date().toISOString(), resultados };
     _cacheSet(_ck, _resp);
     res.json(_resp);
+
+    // PERF (R1): pre-gera o laudo de IA em background assim que a analise termina.
+    // Quando o usuario clicar em "Emitir relatorio", /api/analise-ia responde do
+    // cache (instantaneo) em vez de esperar ~30s pelo modelo.
+    // Kill-switch: LAUDO_PREFETCH=0 desliga (ex.: para conter custo de tokens).
+    if (process.env.LAUDO_PREFETCH !== '0') {
+      setImmediate(() => {
+        _gerarLaudoIA(resultados).catch(e =>
+          console.warn('[laudo-prefetch] falhou (relatorio gerara on-demand):', e?.message || e)
+        );
+      });
+    }
   } catch (error) {
     console.error('Error in /api/analises:', error);
     res.status(500).json({ error: error.message });
@@ -4379,21 +4472,81 @@ function _summarizeResultadosForIA(r) {
   return lines.join('\n');
 }
 
-app.post('/api/analise-ia', async (req, res) => {
+/**
+ * Cache do laudo de IA (R1/R2 de performance).
+ * Chave: hash do resumo compacto dos resultados — o mesmo resumo gera o mesmo
+ * laudo, entao serve tanto para repeticoes (2o clique no relatorio) quanto para
+ * o PREFETCH disparado ao fim de /api/analises (relatorio abre instantaneo).
+ */
+const laudoCache = new Map();
+const LAUDO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const LAUDO_CACHE_MAX = 200;
+
+function _laudoCacheKey(dadosCompactos) {
+  return require('crypto').createHash('sha1').update(dadosCompactos).digest('hex');
+}
+
+/**
+ * Gera (ou retorna do cache) o laudo geologico de IA para um objeto `resultados`.
+ * Usado pela rota /api/analise-ia e pelo prefetch pos-analise.
+ */
+async function _gerarLaudoIA(resultados) {
+  const client = _getAnthropic();
+  if (!client) return null;
+
+  const dadosCompactos = _summarizeResultadosForIA(resultados);
+  const key = _laudoCacheKey(dadosCompactos);
+
+  const hit = laudoCache.get(key);
+  if (hit && Date.now() - hit.t < LAUDO_CACHE_TTL_MS) {
+    console.log('[analise-ia] CACHE HIT', key.slice(0, 10));
+    return { ...hit.payload, cached: true };
+  }
+
+  // Dedup: se ja ha uma geracao em andamento para a mesma chave (ex.: prefetch
+  // ainda rodando quando o usuario clica no relatorio), aguarda a mesma promise.
+  if (hit && hit.pending) {
+    console.log('[analise-ia] aguardando geracao em andamento', key.slice(0, 10));
+    return hit.pending;
+  }
+
+  const t0 = Date.now();
+  const pending = (async () => {
+    const systemPrompt = _laudoSystemPrompt();
+    const userPrompt = `Dados georreferenciados da parcela rural brasileira para análise prospectiva:\n\n${dadosCompactos}\n\nProduza o laudo geológico e prospectivo completo, com modelo conceitual de prospecção e ranking de substâncias minerais prováveis.`;
+
+    const msg = await client.messages.create({
+      model: process.env.LAUDO_IA_MODEL || 'claude-sonnet-4-5',
+      max_tokens: 1500,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    const laudo = (msg.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n\n');
+    const ms = Date.now() - t0;
+    console.log(`[analise-ia] ${ms}ms — ${laudo.length} chars`);
+
+    const payload = { laudo, debug: { ms, model: msg.model, usage: msg.usage } };
+    laudoCache.set(key, { t: Date.now(), payload });
+    // Evicao simples por tamanho (FIFO)
+    if (laudoCache.size > LAUDO_CACHE_MAX) {
+      const oldest = laudoCache.keys().next().value;
+      laudoCache.delete(oldest);
+    }
+    return payload;
+  })();
+
+  laudoCache.set(key, { t: Date.now(), pending });
   try {
-    const client = _getAnthropic();
-    if (!client) {
-      return res.status(503).json({ error: 'ANTHROPIC_API_KEY não configurada no servidor' });
-    }
-    const { resultados } = req.body || {};
-    if (!resultados || typeof resultados !== 'object') {
-      return res.status(400).json({ error: 'body precisa de { resultados }' });
-    }
+    return await pending;
+  } catch (e) {
+    laudoCache.delete(key); // nao cachear falha
+    throw e;
+  }
+}
 
-    const dadosCompactos = _summarizeResultadosForIA(resultados);
-    const t0 = Date.now();
-
-    const systemPrompt = `Você é um geólogo brasileiro. Com base nos dados georreferenciados de uma parcela rural, escreva um LAUDO GEOLÓGICO RESUMIDO e de leitura acessível, em português, com cabeçalhos markdown (##). Seja CURTO e direto — no máximo ~450 palavras no total. Cubra apenas estas seções:
+function _laudoSystemPrompt() {
+  return `Você é um geólogo brasileiro. Com base nos dados georreferenciados de uma parcela rural, escreva um LAUDO GEOLÓGICO RESUMIDO e de leitura acessível, em português, com cabeçalhos markdown (##). Seja CURTO e direto — no máximo ~450 palavras no total. Cubra apenas estas seções:
 
 ## Contexto geológico
 2 a 3 frases sobre as formações/litologias e o ambiente geológico da área.
@@ -4412,20 +4565,20 @@ REGRAS:
 - Use os PROCESSOS MINERÁRIOS ANM fornecidos: se houver processos, nomeie substância/fase/titular; se estiver livre, afirme que a parcela está livre de direitos minerários conhecidos. Não recomende consultar a ANM/SIGMINE — o dado já está no material.
 - Linguagem clara, sem jargão pesado e sem citações acadêmicas.
 - Sem disclaimers genéricos. Seja assertivo mas cauteloso: é um laudo PROSPECTIVO, orienta investigação e não confirma reservas.`;
+}
 
-    const userPrompt = `Dados georreferenciados da parcela rural brasileira para análise prospectiva:\n\n${dadosCompactos}\n\nProduza o laudo geológico e prospectivo completo, com modelo conceitual de prospecção e ranking de substâncias minerais prováveis.`;
+app.post('/api/analise-ia', async (req, res) => {
+  try {
+    if (!_getAnthropic()) {
+      return res.status(503).json({ error: 'ANTHROPIC_API_KEY não configurada no servidor' });
+    }
+    const { resultados } = req.body || {};
+    if (!resultados || typeof resultados !== 'object') {
+      return res.status(400).json({ error: 'body precisa de { resultados }' });
+    }
 
-    const msg = await client.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 1500,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
-    });
-
-    const laudo = (msg.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n\n');
-    const ms = Date.now() - t0;
-    console.log(`[analise-ia] ${ms}ms — ${laudo.length} chars`);
-    res.json({ laudo, debug: { ms, model: msg.model, usage: msg.usage } });
+    const payload = await _gerarLaudoIA(resultados);
+    res.json(payload);
   } catch (error) {
     console.error('[analise-ia] erro:', error?.message || error);
     res.status(500).json({ error: String(error?.message || error) });
