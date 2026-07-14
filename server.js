@@ -4517,7 +4517,11 @@ async function _gerarLaudoIA(resultados) {
   const key = _laudoCacheKey(resultados, dadosCompactos);
 
   const hit = laudoCache.get(key);
-  if (hit && Date.now() - hit.t < LAUDO_CACHE_TTL_MS) {
+  // So e cache HIT se o payload JA EXISTE — uma entrada "pending" (geracao em
+  // andamento) tambem tem `t`, e sem esta checagem retornava {cached:true}
+  // VAZIO quando o usuario pedia o relatorio segundos apos a analise
+  // (relatorio saia sem laudo geologico).
+  if (hit && hit.payload && Date.now() - hit.t < LAUDO_CACHE_TTL_MS) {
     console.log('[analise-ia] CACHE HIT', key.slice(0, 10));
     return { ...hit.payload, cached: true };
   }
