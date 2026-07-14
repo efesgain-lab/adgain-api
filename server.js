@@ -3179,7 +3179,11 @@ app.post('/api/analises', async (req, res) => {
     })()); // fim estágio 9.13f logística
 
     // 9.15 HIDROLOGIA + APTIDÃO PIVÔS CENTRAIS — análise integrada
-    _stages.push((async () => {
+    // SINTETIZADOR: lê hidrografia, aquíferos, solo, bioma e pluviometria dos
+    // outros estágios — por isso roda na FASE 2 (como a conformidade), depois
+    // do Promise.all. Rodando em paralelo, lia tudo vazio e concluía
+    // "NENHUMA fonte de água identificada" com rio dentro da parcela.
+    const _runPivos = async () => {
     analyses['9.15_hidrologia_pivos'] = {
       nome: 'Hidrologia e Aptidão para Pivôs Centrais',
       iap_score: 0,
@@ -3195,9 +3199,11 @@ app.post('/api/analises', async (req, res) => {
       custos_estimados: {},
     };
     try {
-      const _decl = (analyses?.['9.12_altitude']?.declividade_pct_media ?? analyses?.['9.12_altitude']?.declividade_pct ?? 5);
-      const _pma = (analyses?.['9.11_pluviometria']?.media_anual_30anos ?? analyses?.['9.11_pluviometria']?.resumo?.media_anual_mm ?? 1200);
-      const _solos = analyses?.['9.4_solo']?.data || [];
+      // Chaves corrigidas (as antigas 9.12_altitude/9.11_pluviometria/9.4_solo
+      // não existiam — caíam no default em silêncio desde sempre):
+      const _decl = (analyses?.['9.11_altitude']?.declividade_pct_media ?? analyses?.['9.11_altitude']?.declividade_pct ?? 5);
+      const _pma = (pluviometria?.resumo?.media_anual_mm ?? pluviometria?.media_anual_30anos ?? 1200);
+      const _solos = analyses?.['9.3_solo']?.data || [];
       const _solosNomes = _solos.map(s => (s.nome || '').toUpperCase());
       const _bioma = analyses?.['9.4_bioma']?.data?.[0]?.nome || '';
       const _bacias = analyses?.['9.10_hidrografia']?.bacias || [];
@@ -3376,7 +3382,7 @@ app.post('/api/analises', async (req, res) => {
       };
     } catch (e) { console.error('[HIDRO_PIVOS]', e.message); }
 
-    })()); // fim estágio 9.15 pivôs
+    }; // fim _runPivos (chamado na fase 2)
 
     // 9.13c PRODES + DETER (desmatamento INPE via WFS TerraBrasilis)
     _stages.push((async () => {
@@ -3893,6 +3899,12 @@ app.post('/api/analises', async (req, res) => {
 
     // Conformidade ambiental — depende de CAR + PRODES + bioma (só computo)
     _runConformidade();
+
+    // Pivôs/hidrologia — sintetizador que lê hidrografia, aquíferos, solo,
+    // bioma e pluviometria já prontos (só a query de empacotamento vai ao banco)
+    console.time('[fase2] pivos');
+    await _runPivos();
+    console.timeEnd('[fase2] pivos');
 
     // Mapear analyses para o formato AnaliseResultados esperado pelo frontend
     const centroidParsed = municipio.centroid ? JSON.parse(municipio.centroid) : null;
