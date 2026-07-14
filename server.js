@@ -1032,6 +1032,11 @@ async function ensureSoilCache() {
   }
 }
 
+// Circuit breaker da ISRIC: depois de esgotar as tentativas, não insistir por
+// um período — análises seguintes respondem "indisponível" na hora em vez de
+// queimar dezenas de segundos numa API que está fora.
+let _soilgridsDownUntil = 0;
+
 async function fetchSoilGrids(lat, lng) {
   // O relatorio e a coluna de resultados usam APENAS a camada superficial (0-5cm)
   // com 6 propriedades. Buscar so o necessario deixa a query ~5x mais leve na ISRIC.
@@ -1064,13 +1069,22 @@ async function fetchSoilGrids(lat, lng) {
   const factor = { clay: 0.1, sand: 0.1, silt: 0.1, soc: 0.1, phh2o: 0.1, nitrogen: 0.01, bdod: 0.01 };
   const label  = { clay: 'argila_%', sand: 'areia_%', silt: 'silte_%', soc: 'carbono_organico_g_kg', phh2o: 'ph', nitrogen: 'nitrogenio_g_kg', bdod: 'densidade_g_cm3' };
 
-  // ISRIC e lenta e limita requisicoes (HTTP 429). Tenta ate 3x com backoff.
-  const MAX_ATTEMPTS = 3;
+  // Circuit breaker: ISRIC falhou há pouco → não insistir agora
+  if (Date.now() < _soilgridsDownUntil) {
+    console.warn('[SoilGrids] circuit breaker ativo — pulando consulta');
+    return { pendente: false, erro: 'SoilGrids temporariamente indisponivel', camadas: null };
+  }
+
+  // ISRIC e lenta e limita requisicoes (HTTP 429). PERF: tentativas/timeouts
+  // curtos — pior caso ~22s (era ate 84s: 3x25s + backoffs). A analise nao
+  // pode ficar refem do solo; sem resposta, segue com erro explicito.
+  const MAX_ATTEMPTS = parseInt(process.env.SOILGRIDS_ATTEMPTS || '2', 10);
+  const SG_TIMEOUT = parseInt(process.env.SOILGRIDS_TIMEOUT_MS || '10000', 10);
   let lastErr = 'desconhecido';
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       console.log('[SoilGrids] fetch tentativa ' + attempt + '/' + MAX_ATTEMPTS, url.slice(0, 80));
-      const resp = await fetch(url, { signal: AbortSignal.timeout(25000) });
+      const resp = await fetch(url, { signal: AbortSignal.timeout(SG_TIMEOUT) });
       if (!resp.ok) throw new Error('SoilGrids HTTP ' + resp.status);
       const data = await resp.json();
 
@@ -1102,11 +1116,13 @@ async function fetchSoilGrids(lat, lng) {
       lastErr = e.message;
       console.warn('[SoilGrids] tentativa ' + attempt + ' falhou:', e.message);
       if (attempt < MAX_ATTEMPTS) {
-        await new Promise(res => setTimeout(res, attempt * 3000));
+        await new Promise(res => setTimeout(res, 1500));
       }
     }
   }
   console.warn('[SoilGrids] esgotou as tentativas:', lastErr);
+  // Abre o circuit breaker: próximas análises não esperam a ISRIC por 10 min
+  _soilgridsDownUntil = Date.now() + parseInt(process.env.SOILGRIDS_BREAKER_MS || '600000', 10);
   return { pendente: false, erro: 'SoilGrids indisponivel: ' + lastErr, camadas: null };
 }
 function parseGeoJSONFeature(geojson) {
@@ -3416,15 +3432,35 @@ app.post('/api/analises', async (req, res) => {
         const bbox = [parseFloat(bb.minx), parseFloat(bb.miny), parseFloat(bb.maxx), parseFloat(bb.maxy)];
         // Roda WFS pra todos biomas em paralelo (cada um com timeout próprio)
         const t0 = Date.now();
+        // PERF: consultar só as camadas de biomas POSSÍVEIS para a UF da parcela
+        // (generoso nas bordas — inclui biomas vizinhos). MT: 5 chamadas em vez
+        // de 8; PR/SC: 2. UF desconhecida → todas (comportamento antigo).
+        const _ufBiomas = {
+          AC: ['amz'], AM: ['amz'], AP: ['amz'], RR: ['amz'],
+          PA: ['amz', 'cer'], RO: ['amz', 'cer'],
+          MT: ['amz', 'cer', 'pan'], TO: ['amz', 'cer'], MA: ['amz', 'cer', 'caa'],
+          MS: ['cer', 'pan', 'ma'], GO: ['cer', 'ma'], DF: ['cer'],
+          BA: ['cer', 'caa', 'ma'], PI: ['cer', 'caa'],
+          CE: ['caa', 'ma'], RN: ['caa', 'ma'], PB: ['caa', 'ma'],
+          PE: ['caa', 'ma'], AL: ['caa', 'ma'], SE: ['caa', 'ma'],
+          MG: ['cer', 'ma', 'caa'], SP: ['cer', 'ma'], RJ: ['ma'], ES: ['ma'],
+          PR: ['ma', 'cer'], SC: ['ma'], RS: ['ma', 'pam'],
+        };
+        const _biomas = _ufBiomas[String(municipio.uf || '').toUpperCase()]
+          || ['amz', 'cer', 'ma', 'caa', 'pam', 'pan'];
+        const INPE_T = parseInt(process.env.INPE_WFS_TIMEOUT_MS || '12000', 10);
+        const _wfsSe = (ativo, layer) => ativo
+          ? fetchWFS(layer, bbox, INPE_T)
+          : Promise.resolve({ features: [] });
         const [prodesAmz, prodesCer, prodesMA, prodesCa, prodesPampa, prodesPant, deterAmz, deterCer] = await Promise.all([
-          fetchWFS('prodes-amazon-nb:yearly_deforestation_biome', bbox, 20000),
-          fetchWFS('prodes-cerrado-nb:yearly_deforestation', bbox, 20000),
-          fetchWFS('prodes-mata-atlantica-nb:yearly_deforestation', bbox, 20000),
-          fetchWFS('prodes-caatinga-nb:yearly_deforestation', bbox, 20000),
-          fetchWFS('prodes-pampa-nb:yearly_deforestation', bbox, 20000),
-          fetchWFS('prodes-pantanal-nb:yearly_deforestation', bbox, 20000),
-          fetchWFS('deter-amz:deter_amz', bbox, 20000),
-          fetchWFS('deter-cerrado-nb:deter_cerrado', bbox, 20000),
+          _wfsSe(_biomas.includes('amz'), 'prodes-amazon-nb:yearly_deforestation_biome'),
+          _wfsSe(_biomas.includes('cer'), 'prodes-cerrado-nb:yearly_deforestation'),
+          _wfsSe(_biomas.includes('ma'),  'prodes-mata-atlantica-nb:yearly_deforestation'),
+          _wfsSe(_biomas.includes('caa'), 'prodes-caatinga-nb:yearly_deforestation'),
+          _wfsSe(_biomas.includes('pam'), 'prodes-pampa-nb:yearly_deforestation'),
+          _wfsSe(_biomas.includes('pan'), 'prodes-pantanal-nb:yearly_deforestation'),
+          _wfsSe(_biomas.includes('amz'), 'deter-amz:deter_amz'),
+          _wfsSe(_biomas.includes('cer'), 'deter-cerrado-nb:deter_cerrado'),
         ]);
         const elapsed = Date.now() - t0;
         const wfsCounts = {
