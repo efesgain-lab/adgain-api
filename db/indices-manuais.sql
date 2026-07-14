@@ -16,6 +16,15 @@ ANALYZE carbono_solo.carbono_2024;
 --   queries 'WITH parcel_geom ...' com waits IO/IPC por 1min+ = parallel
 --   seq scan do raster. Confirmação: pg_indexes sem NENHUM índice na tabela.
 
+-- 14/07/2026 — Índice espacial no raster de altitude (achado da auditoria:
+-- ÚNICA tabela sem nenhum índice restante no banco; 83 MB, usada em 5+
+-- queries por análise: altitude da parcela, grid, relevo do buffer,
+-- gradiente radial e altitude do centroide). Aplicado via SQL Editor.
+CREATE INDEX IF NOT EXISTS idx_altitude_raster_convexhull
+  ON altitude_br.altitude_raster
+  USING GIST (ST_ConvexHull(rast));
+ANALYZE altitude_br.altitude_raster;
+
 -- ═══════════════════════════════════════════════════════════════════
 -- AUDITORIA DE ÍNDICES (14/07/2026) — rodar no SQL Editor do Supabase.
 -- Lista, em TODOS os schemas de dados, as tabelas SEM NENHUM índice,
