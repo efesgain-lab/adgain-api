@@ -3339,9 +3339,9 @@ app.post('/api/analises', async (req, res) => {
       const _nomesSolo = (re) => [...new Set(_solos
         .filter(x => re.test(String(x.nome || '').toUpperCase()))
         .map(x => String(x.nome || '').split(' - ').pop().split('(')[0].trim()))].join(', ');
-      if (_pctArenoso >= 20) restr.push({ severidade: 'atencao', texto: `${_nomesSolo(/NEOSSOLO\s+QUARTZAR/) || 'Neossolo Quartzarênico'} em ${_pctArenoso.toFixed(1)}% da área — risco de lixiviação` });
-      if (_pctGleico >= 30) restr.push({ severidade: 'critica', texto: `${_nomesSolo(/GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/)} em ${_pctGleico.toFixed(1)}% da área — má drenagem natural, pivô contraindicado nessa porção` });
-      else if (_pctGleico >= 10) restr.push({ severidade: 'atencao', texto: `${_nomesSolo(/GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/)} em ${_pctGleico.toFixed(1)}% da área — má drenagem localizada; excluir do projeto de pivô` });
+      if (_pctArenoso >= 20) restr.push({ severidade: 'atencao', texto: `${_nomesSolo(/NEOSSOLO\s+QUARTZAR/) || 'Neossolo Quartzarênico'} em ${_pctArenoso.toFixed(1)}% da área — solo arenoso com risco de lixiviação: nas manchas desse solo, irrigar com lâminas menores e mais frequentes e parcelar a adubação` });
+      if (_pctGleico >= 30) restr.push({ severidade: 'critica', texto: `${_nomesSolo(/GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/)} em ${_pctGleico.toFixed(1)}% da área — solo de má drenagem natural: excluir as áreas com esse tipo de solo do projeto de pivô e posicionar os equipamentos nas demais porções da parcela` });
+      else if (_pctGleico >= 10) restr.push({ severidade: 'atencao', texto: `${_nomesSolo(/GLEISSOLO|ORGANOSSOLO|PLANOSSOLO/)} em ${_pctGleico.toFixed(1)}% da área — mancha de solo com má drenagem natural: excluir essas áreas do projeto de pivô (o restante da parcela não é afetado)` });
       if (deficit < 100) restr.push({ severidade: 'atencao', texto: `Pluviometria ${Math.round(_pma)}mm/ano — ROI baixo em região úmida` });
       if (!_cursos && !_aqPoroso.length && !_aqFraturado.length) restr.push({ severidade: 'critica', texto: 'Nenhuma fonte de água identificada — captação externa necessária' });
       if (_areaHa < 30) restr.push({ severidade: 'atencao', texto: `Parcela com ${_areaHa.toFixed(0)}ha — CAPEX alto, considerar gotejamento ou aspersão linear` });
