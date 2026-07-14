@@ -48,5 +48,4 @@ LIMIT 40;
 --     ON <schema>.<tabela> USING GIST (geom);
 --   ANALYZE <schema>.<tabela>;
 
--- PENDENTE:
---   - Tabela car.apps_mt NÃO EXISTE no banco (APPs do CAR vazias para MT) — importar.
+-- (car.apps_mt: ausência confirmada como OK pelo produto em 14/07/2026 — não importar.)
