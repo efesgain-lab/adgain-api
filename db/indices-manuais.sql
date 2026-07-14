@@ -16,12 +16,37 @@ ANALYZE carbono_solo.carbono_2024;
 --   queries 'WITH parcel_geom ...' com waits IO/IPC por 1min+ = parallel
 --   seq scan do raster. Confirmação: pg_indexes sem NENHUM índice na tabela.
 
--- PENDENTE (verificar em próxima sessão):
---   - Conferir se outros rasters têm índice: altitude_br.altitude_raster,
---     e demais tabelas de carbono_solo/altitude_br. Query de auditoria:
---     SELECT t.schemaname, t.tablename
---     FROM pg_tables t
---     LEFT JOIN pg_indexes i ON i.schemaname=t.schemaname AND i.tablename=t.tablename
---     WHERE t.schemaname IN ('carbono_solo','altitude_br','hidrografia','bioma','solo')
---     GROUP BY 1,2 HAVING count(i.indexname) = 0;
+-- ═══════════════════════════════════════════════════════════════════
+-- AUDITORIA DE ÍNDICES (14/07/2026) — rodar no SQL Editor do Supabase.
+-- Lista, em TODOS os schemas de dados, as tabelas SEM NENHUM índice,
+-- com tamanho e se têm coluna raster/geom (as maiores primeiro = os
+-- próximos "carbonos escondidos").
+-- ═══════════════════════════════════════════════════════════════════
+SELECT
+  t.schemaname,
+  t.tablename,
+  pg_size_pretty(pg_total_relation_size(quote_ident(t.schemaname)||'.'||quote_ident(t.tablename))) AS tamanho,
+  pg_total_relation_size(quote_ident(t.schemaname)||'.'||quote_ident(t.tablename)) AS bytes,
+  EXISTS (SELECT 1 FROM information_schema.columns c
+          WHERE c.table_schema = t.schemaname AND c.table_name = t.tablename
+            AND c.udt_name IN ('raster','geometry','geography')) AS tem_geo
+FROM pg_tables t
+LEFT JOIN pg_indexes i
+  ON i.schemaname = t.schemaname AND i.tablename = t.tablename
+WHERE t.schemaname NOT IN ('pg_catalog','information_schema','auth','storage','realtime','vault','extensions','graphql','graphql_public','pgsodium','supabase_functions','net','pgbouncer')
+GROUP BY 1, 2
+HAVING count(i.indexname) = 0
+ORDER BY bytes DESC
+LIMIT 40;
+
+-- Para cada RASTER sem índice encontrado acima, aplicar (trocar schema.tabela):
+--   CREATE INDEX IF NOT EXISTS idx_<tabela>_convexhull
+--     ON <schema>.<tabela> USING GIST (ST_ConvexHull(rast));
+--   ANALYZE <schema>.<tabela>;
+-- Para cada tabela com GEOMETRY sem índice:
+--   CREATE INDEX IF NOT EXISTS idx_<tabela>_geom
+--     ON <schema>.<tabela> USING GIST (geom);
+--   ANALYZE <schema>.<tabela>;
+
+-- PENDENTE:
 --   - Tabela car.apps_mt NÃO EXISTE no banco (APPs do CAR vazias para MT) — importar.
