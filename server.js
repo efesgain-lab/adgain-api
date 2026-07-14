@@ -795,6 +795,9 @@ async function fetchPluviometriaANA(lat, lng, uf = 'MT') {
   try {
     // ── 1. Inventário de estações pluviométricas próximas ──
     const delta = 6.0;
+    // FIX: `stations` era atribuída sem declaração (global implícita) — corrida
+    // entre requisições concorrentes e ReferenceError se o inventário falhasse.
+    let stations = [];
     // ── 1. Buscar inventário de estações pluviométricas por UF ──
     try {
       const ufCode = (uf || 'MT').toUpperCase();
@@ -1775,6 +1778,8 @@ app.post('/api/analises', async (req, res) => {
     // estágios foi removida. Conformidade (9.13d) depende de CAR+PRODES+bioma
     // e roda depois, na fase 2.
     const _stages = [];
+    // Compartilhado entre os estágios de fundiária e CAR:
+    const isCARSelected = origemParcel === 'car';
     // Variáveis escritas por estágios e lidas na resposta/fase 2 (içadas):
     let _riosGeomFinal = null;
     let pluviometria = { pendente: false, erro: 'Coordenadas não disponíveis', media_mensal: null };
@@ -1831,7 +1836,7 @@ app.post('/api/analises', async (req, res) => {
 
     // Se origem é CAR → usa 4 pontos para encontrar SIGEF/SNCI correspondentes
     // Se origem é SIGEF/SNCI/mixed → usa intersecção direta (parcela selecionada é a própria)
-    const isCARSelected = origemParcel === 'car';
+    // (isCARSelected içado para o preâmbulo — usado também no estágio do CAR)
 
     if (isCARSelected) {
       // Parcela CAR selecionada → todas SIGEF com sobreposição real de área (SIGEF pode ser menor que CAR)
