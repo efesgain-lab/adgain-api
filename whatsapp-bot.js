@@ -409,6 +409,30 @@ module.exports = function registerWhatsAppBot(app) {
     }
   });
 
+  // Diagnóstico: estado do número e da WABA na Meta (protegido pelo verify token)
+  app.get('/api/whatsapp/diag', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    try {
+      const headers = { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` };
+      const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
+      const [numero, conta] = await Promise.all([
+        fetch(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_ID}?fields=display_phone_number,verified_name,name_status,code_verification_status,quality_rating,platform_type,status`,
+          { headers }
+        ).then((r) => r.json()),
+        fetch(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${waba}?fields=name,account_review_status,business_verification_status,ownership_type,country`,
+          { headers }
+        ).then((r) => r.json()),
+      ]);
+      res.json({ numero, conta });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Diagnóstico: últimos statuses de entrega (protegido pelo verify token).
   // GET /api/whatsapp/status?token=...          -> lista últimos statuses
   // GET /api/whatsapp/status?token=...&ping=1   -> dispara um envio de teste antes
