@@ -72,6 +72,7 @@ const KB = {
 // ------------------------------------------------------------
 const processedMsgs = new Map(); // msgId -> timestamp (dedup de retries do webhook)
 const humanMode = new Map(); // waId -> timestamp (bot silencia após pedir humano)
+const lastStatuses = []; // últimos statuses de entrega (diagnóstico via /api/whatsapp/status)
 const PROCESSED_TTL_MS = 10 * 60 * 1000;
 const HUMAN_MODE_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -245,7 +246,16 @@ module.exports = function registerWhatsAppBot(app) {
               console.error('[wa-bot] Erro ao processar mensagem:', err)
             );
           }
-          // value.statuses (entregue/lido) chega aqui também — ignorado na Fase B
+          // Statuses de entrega (sent/delivered/read/failed) — guardados p/ diagnóstico
+          for (const st of value.statuses || []) {
+            lastStatuses.push({
+              quando: new Date().toISOString(),
+              para: st.recipient_id,
+              status: st.status,
+              erro: (st.errors && st.errors[0] && st.errors[0].code) || null,
+            });
+            if (lastStatuses.length > 20) lastStatuses.shift();
+          }
         }
       }
     } catch (err) {
@@ -275,6 +285,24 @@ module.exports = function registerWhatsAppBot(app) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // Diagnóstico: últimos statuses de entrega (protegido pelo verify token).
+  // GET /api/whatsapp/status?token=...          -> lista últimos statuses
+  // GET /api/whatsapp/status?token=...&ping=1   -> dispara um envio de teste antes
+  app.get('/api/whatsapp/status', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    if (req.query.ping) {
+      await waSend({
+        messaging_product: 'whatsapp',
+        to: req.query.ping === '1' ? '556599757621' : String(req.query.ping),
+        type: 'text',
+        text: { body: '🔧 Teste automático de entrega AdGain — pode ignorar.' },
+      });
+    }
+    res.json({ statuses: lastStatuses });
   });
 
   console.log('[wa-bot] Rotas do bot WhatsApp registradas (/api/whatsapp/webhook)');
