@@ -105,6 +105,8 @@ async function waSend(payload) {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     console.error('[wa-bot] Falha no envio:', resp.status, JSON.stringify(data));
+  } else {
+    console.log('[wa-bot] Enviado para', payload.to, '-', (data.messages && data.messages[0] && data.messages[0].id) || 'ok');
   }
   return data;
 }
@@ -231,6 +233,8 @@ module.exports = function registerWhatsAppBot(app) {
 
     try {
       const entries = (req.body && req.body.entry) || [];
+      // Diagnóstico: registra todo evento recebido (recortado)
+      console.log('[wa-bot] Webhook POST:', JSON.stringify(req.body || {}).slice(0, 600));
       for (const entry of entries) {
         for (const change of entry.changes || []) {
           const value = change.value || {};
@@ -246,6 +250,30 @@ module.exports = function registerWhatsAppBot(app) {
       }
     } catch (err) {
       console.error('[wa-bot] Erro no webhook:', err);
+    }
+  });
+
+  // Utilitário: assina o app na WABA (necessário para receber mensagens; a Meta
+  // nem sempre cria esse vínculo sozinha). Protegido pelo verify token.
+  // GET  /api/whatsapp/subscribe?token=...        -> consulta assinatura atual
+  // GET  /api/whatsapp/subscribe?token=...&do=1   -> cria a assinatura
+  app.get('/api/whatsapp/subscribe', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    try {
+      const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
+      const url = `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/subscribed_apps`;
+      const opts = {
+        method: req.query.do ? 'POST' : 'GET',
+        headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` },
+      };
+      const r = await fetch(url, opts);
+      const d = await r.json().catch(() => ({}));
+      console.log('[wa-bot] subscribed_apps', opts.method, r.status, JSON.stringify(d).slice(0, 300));
+      res.json({ metodo: opts.method, status: r.status, resposta: d });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 
