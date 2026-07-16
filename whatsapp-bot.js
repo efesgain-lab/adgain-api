@@ -17,6 +17,7 @@
 // ============================================================
 
 const GRAPH_VERSION = 'v23.0';
+const { getDb } = require('./firebase');
 
 // ------------------------------------------------------------
 // Base de conhecimento (Fase B: estática — espelha as respostas
@@ -73,8 +74,101 @@ const KB = {
 const processedMsgs = new Map(); // msgId -> timestamp (dedup de retries do webhook)
 const humanMode = new Map(); // waId -> timestamp (bot silencia após pedir humano)
 const lastStatuses = []; // últimos statuses de entrega (diagnóstico via /api/whatsapp/status)
+const userCache = new Map(); // waId -> { user: {uid,nome,plano}|null, ts }
 const PROCESSED_TTL_MS = 10 * 60 * 1000;
 const HUMAN_MODE_TTL_MS = 12 * 60 * 60 * 1000;
+const USER_CACHE_TTL_MS = 10 * 60 * 1000;
+
+// ------------------------------------------------------------
+// Cliente AdGain: identificação pelo número (users.phoneDigits)
+// e plano efetivo (campos planos primeiro; profile.subscription é legado)
+// ------------------------------------------------------------
+const PLAN_NAMES = {
+  gratuito: 'Gratuito',
+  essencial: 'Essencial',
+  profissional: 'Profissional',
+  empresarial: 'Empresarial',
+  premium: 'Premium',
+  enterprise: 'Premium',
+};
+const PRIORITY_PLANS = ['empresarial', 'premium', 'enterprise'];
+
+async function lookupUser(waId) {
+  const hit = userCache.get(waId);
+  if (hit && Date.now() - hit.ts < USER_CACHE_TTL_MS) return hit.user;
+  let user = null;
+  try {
+    const db = getDb();
+    if (db) {
+      const snap = await db
+        .collection('users')
+        .where('phoneDigits', 'array-contains', waId)
+        .limit(1)
+        .get();
+      if (!snap.empty) {
+        const d = snap.docs[0].data() || {};
+        let plano = 'gratuito';
+        if (d.subscriptionPlan && (!d.subscriptionStatus || d.subscriptionStatus === 'active')) {
+          plano = d.subscriptionPlan;
+        } else if (d.profile && d.profile.subscription && d.profile.subscription.planType) {
+          plano = d.profile.subscription.planType;
+        }
+        user = {
+          uid: snap.docs[0].id,
+          nome: d.displayName || null,
+          plano,
+        };
+      }
+    }
+  } catch (err) {
+    console.error('[wa-bot] lookup de usuário falhou:', err.message);
+  }
+  userCache.set(waId, { user, ts: Date.now() });
+  return user;
+}
+
+// ------------------------------------------------------------
+// Preços vivos (credit_config/pricing — mesma fonte do site/checkout)
+// ------------------------------------------------------------
+let pricingCache = { text: null, ts: 0 };
+const PRICING_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function getPlanosText() {
+  if (pricingCache.text && Date.now() - pricingCache.ts < PRICING_CACHE_TTL_MS) {
+    return pricingCache.text;
+  }
+  try {
+    const db = getDb();
+    if (db) {
+      const doc = await db.doc('credit_config/pricing').get();
+      const plans = doc.exists && Array.isArray(doc.data().plans) ? doc.data().plans : null;
+      if (plans && plans.length) {
+        const fmt = (c) =>
+          !c || c <= 0 ? 'Grátis' : 'R$ ' + (c / 100).toFixed(2).replace('.', ',') + '/mês';
+        const linhas = plans
+          .slice()
+          .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
+          .map((p) => {
+            const extras = [];
+            if (p.creditsPerMonth) extras.push(`${p.creditsPerMonth} créditos/mês`);
+            if (p.maxPhotosPerAd) extras.push(`${p.maxPhotosPerAd} fotos por anúncio`);
+            return `▫️ *${p.name}* — ${fmt(p.priceInCents)}${extras.length ? `\n   ${extras.join(' • ')}` : ''}`;
+          });
+        pricingCache = {
+          text:
+            '🌱 *Planos AdGain*:\n\n' +
+            linhas.join('\n') +
+            '\n\nCompare os recursos e assine em: www.adgain.com.br/plans',
+          ts: Date.now(),
+        };
+        return pricingCache.text;
+      }
+    }
+  } catch (err) {
+    console.error('[wa-bot] preços vivos falharam:', err.message);
+  }
+  return KB.planos; // fallback estático
+}
 
 function _sweep(map, ttl) {
   const now = Date.now();
@@ -116,13 +210,22 @@ function sendText(to, body) {
   return waSend({ to, type: 'text', text: { body, preview_url: false } });
 }
 
-function sendMenu(to) {
+function sendMenu(to, user) {
+  let saudacao = KB.saudacao;
+  if (user) {
+    const primeiroNome = (user.nome || '').split(' ')[0];
+    const plano = PLAN_NAMES[user.plano] || 'Gratuito';
+    saudacao =
+      `Olá${primeiroNome ? `, *${primeiroNome}*` : ''}! 🌱 Você fala com o assistente da *AdGain*.\n\n` +
+      `Vi aqui que você é cliente do plano *${plano}*. ` +
+      'Escolha uma opção no menu abaixo, ou escreva sua pergunta.';
+  }
   return waSend({
     to,
     type: 'interactive',
     interactive: {
       type: 'list',
-      body: { text: KB.saudacao },
+      body: { text: saudacao },
       footer: { text: 'AdGain • adgain.com.br' },
       action: {
         button: 'Ver opções',
@@ -146,17 +249,33 @@ function sendMenu(to) {
 // Roteamento de mensagens recebidas
 // ------------------------------------------------------------
 const OPTION_HANDLERS = {
-  op_planos: (to) => sendText(to, KB.planos),
+  op_planos: async (to) => sendText(to, await getPlanosText()),
   op_anunciar: (to) => sendText(to, KB.anunciar),
   op_analise: (to) => sendText(to, KB.analise),
-  op_humano: async (to, profileName) => {
+  op_humano: async (to, ctx) => {
     humanMode.set(to, Date.now());
-    await sendText(to, KB.humano);
+    const user = ctx && ctx.user;
+    const prioritario = user && PRIORITY_PLANS.includes(user.plano);
+    if (prioritario) {
+      const dedicado = user.plano === 'premium' || user.plano === 'enterprise';
+      await sendText(
+        to,
+        `👤 Certo! Sua conversa entrou na *fila prioritária* da nossa equipe${dedicado ? ' (atendimento dedicado Premium)' : ''}.\n\n` +
+          'Um atendente vai te responder por aqui o quanto antes (horário comercial: seg–sex, 8h–18h).\n\n' +
+          'Pode adiantar sua dúvida em uma mensagem que ele já chega sabendo do assunto. 👍'
+      );
+    } else {
+      await sendText(to, KB.humano);
+    }
     const admin = process.env.ADMIN_WHATSAPP;
     if (admin) {
+      const nome = (user && user.nome) || (ctx && ctx.profileName) || 'sem nome';
+      const plano = user ? PLAN_NAMES[user.plano] || user.plano : 'visitante';
       await sendText(
         admin,
-        `🔔 *Pedido de atendimento humano*\nCliente: ${profileName || 'sem nome'} (wa.me/${to})\nResponda pelo WhatsApp Business.`
+        `🔔 *Pedido de atendimento humano*${prioritario ? ' ⭐ PRIORITÁRIO' : ''}\n` +
+          `Cliente: ${nome} — plano ${plano} (wa.me/${to})\n` +
+          'Responda pelo WhatsApp Business.'
       );
     }
   },
@@ -183,10 +302,13 @@ async function handleIncomingMessage(msg, contacts) {
     const t = msg.type === 'text' ? (msg.text.body || '').trim().toLowerCase() : '';
     if (t === 'menu') {
       humanMode.delete(from);
-      return sendMenu(from);
+      return sendMenu(from, await lookupUser(from));
     }
     return;
   }
+
+  const user = await lookupUser(from);
+  const ctx = { profileName, user };
 
   // Resposta de menu interativo (list)
   if (msg.type === 'interactive') {
@@ -194,16 +316,16 @@ async function handleIncomingMessage(msg, contacts) {
       (msg.interactive.list_reply && msg.interactive.list_reply.id) ||
       (msg.interactive.button_reply && msg.interactive.button_reply.id);
     const handler = OPTION_HANDLERS[replyId];
-    if (handler) return handler(from, profileName);
-    return sendMenu(from);
+    if (handler) return handler(from, ctx);
+    return sendMenu(from, user);
   }
 
   // Texto digitado
   if (msg.type === 'text') {
     const shortcut = matchShortcut(msg.text.body);
-    if (shortcut === 'menu') return sendMenu(from);
-    if (shortcut && OPTION_HANDLERS[shortcut]) return OPTION_HANDLERS[shortcut](from, profileName);
-    // Fase C: pergunta livre -> Claude com base de conhecimento.
+    if (shortcut === 'menu') return sendMenu(from, user);
+    if (shortcut && OPTION_HANDLERS[shortcut]) return OPTION_HANDLERS[shortcut](from, ctx);
+    // Fase C2: pergunta livre -> Claude com base de conhecimento.
     return sendText(from, KB.foraDoEscopo);
   }
 
