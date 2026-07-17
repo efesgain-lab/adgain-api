@@ -71,7 +71,7 @@ const BOT_CORE = `Você é o assistente virtual oficial da AdGain (www.adgain.co
 
 SOBRE A ADGAIN:
 - Anunciantes publicam propriedades rurais (fazendas, sítios, chácaras, lotes) e compradores as encontram no site.
-- Diferencial: a ANÁLISE TÉCNICA — o usuário seleciona a parcela no mapa (SIGEF/CAR) e em ~2 minutos recebe um raio-X da terra: CAR e conformidade ambiental, desmatamento (PRODES/DETER), queimadas, solos, relevo, clima, recursos hídricos, aptidão para pivôs centrais, infraestrutura, logística e laudo geológico por IA. A análise pode virar relatório completo e selo de qualidade no anúncio.
+- Diferencial: a ANÁLISE TÉCNICA — o usuário seleciona a parcela no mapa (SIGEF/CAR) e em ~2 minutos recebe um raio-X completo da terra: ambiental (CAR, Reserva Legal e conformidade, desmatamento PRODES/DETER, embargos), sobreposições (terras indígenas, unidades de conservação, requerimentos minerários), a terra em si (solos, carbono do solo, geologia com laudo por IA, altitude, relevo, bioma), água e clima (hidrografia, aquíferos, histórico de chuvas, aptidão para pivôs centrais com fontes de água), documental (situação fundiária SIGEF e registral/matrícula) e produção (infraestrutura, logística de escoamento, silos/armazéns próximos). A análise pode virar relatório completo e selo de qualidade no anúncio.
 - CRÉDITOS: moeda interna do site. Servem para desbloquear seções de análises e relatórios. Assinantes ganham créditos todo mês (conforme o plano) e qualquer um pode comprar créditos avulsos. Anunciantes ganham parte dos créditos (reward) quando compradores desbloqueiam seções do anúncio deles.
 - COMO ANUNCIAR: entrar em www.adgain.com.br → Anunciar → escolher "pelo mapa" (seleciona a parcela SIGEF/CAR e pode rodar a análise) ou "cadastro manual". O rascunho fica salvo e sincroniza entre dispositivos. Quantidade de fotos por anúncio depende do plano.
 - ESTATÍSTICAS: planos pagos têm painel de estatísticas básicas dos anúncios; Empresarial e Premium têm analytics completo por anúncio (gráficos, funil, origem do tráfego, PDF).
@@ -144,12 +144,13 @@ const CANNED = {
 
   analise:
     '🛰️ *Análise técnica AdGain — o raio-X da sua terra*\n\n' +
-    'Você seleciona a parcela no mapa e em ~2 minutos recebe:\n' +
-    '▫️ CAR e conformidade ambiental\n' +
-    '▫️ Desmatamento (PRODES/DETER) e queimadas\n' +
-    '▫️ Solos, relevo, clima e recursos hídricos\n' +
-    '▫️ Aptidão para pivôs centrais e fontes de água\n' +
-    '▫️ Infraestrutura, logística e laudo geológico por IA\n\n' +
+    'Você seleciona a parcela no mapa e em ~2 minutos recebe:\n\n' +
+    '🌳 *Ambiental*: CAR, Reserva Legal e conformidade, desmatamento (PRODES/DETER) e embargos\n' +
+    '⚠️ *Sobreposições*: terras indígenas, unidades de conservação e requerimentos minerários\n' +
+    '🏔️ *A terra*: solos, carbono do solo, geologia com laudo por IA, altitude, relevo e bioma\n' +
+    '💧 *Água e clima*: hidrografia, aquíferos, histórico de chuvas e aptidão para pivôs centrais com fontes de água\n' +
+    '📜 *Documental*: situação fundiária (SIGEF) e registral (matrícula/cartório)\n' +
+    '🚛 *Produção*: infraestrutura, logística de escoamento e silos/armazéns próximos\n\n' +
     'Tudo pode virar um *relatório completo* para valorizar seu anúncio ou apoiar sua decisão de compra.',
 
   ganhos:
