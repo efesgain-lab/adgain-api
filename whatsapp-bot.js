@@ -100,6 +100,83 @@ function adminNumbers() {
     .filter(Boolean);
 }
 
+// Forma canônica p/ comparar números BR: o wa_id pode vir sem o 9º dígito
+// (ex.: 556599998127 vs 5565999988127) — removemos o 9 extra ao comparar.
+function canonNumber(n) {
+  const d = String(n || '').replace(/\D+/g, '');
+  return d.length === 13 && d.startsWith('55') && d[4] === '9' ? d.slice(0, 4) + d.slice(5) : d;
+}
+function isAdmin(waId) {
+  const c = canonNumber(waId);
+  return adminNumbers().some((a) => canonNumber(a) === c);
+}
+
+// ------------------------------------------------------------
+// Fila de alertas de atendimento humano (Firestore) — quando a janela de 24h
+// do admin está fechada, o alerta falha (131047); guardamos e entregamos na
+// próxima mensagem que o admin mandar ao bot (entrega grátis, sem template).
+// ------------------------------------------------------------
+const alertsByWamid = new Map(); // wamid do alerta enviado -> dados (p/ detectar falha async)
+const ALERT_TRACK_TTL_MS = 60 * 60 * 1000;
+
+async function queuePendingAlert(alerta) {
+  try {
+    const db = getDb();
+    if (!db) return;
+    const docId = `${alerta.cliente}-${String(alerta.criado || '').replace(/[:.]/g, '-')}`;
+    await db.collection('whatsapp_pending_alerts').doc(docId).set(
+      {
+        cliente: alerta.cliente,
+        nome: alerta.nome || null,
+        plano: alerta.plano || null,
+        prioritario: !!alerta.prioritario,
+        criado: alerta.criado,
+      },
+      { merge: true }
+    );
+    console.log('[wa-bot] Alerta guardado na fila (janela do admin fechada):', alerta.cliente);
+  } catch (err) {
+    console.error('[wa-bot] Falha ao guardar alerta na fila:', err.message);
+  }
+}
+
+async function flushPendingAlerts(admin) {
+  try {
+    const db = getDb();
+    if (!db) return;
+    const snap = await db
+      .collection('whatsapp_pending_alerts')
+      .orderBy('criado')
+      .limit(20)
+      .get();
+    if (snap.empty) return;
+    const linhas = snap.docs.map((d) => {
+      const a = d.data();
+      let quando = '';
+      try {
+        quando = new Date(a.criado).toLocaleString('pt-BR', {
+          timeZone: 'America/Cuiaba',
+          day: '2-digit',
+          month: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      } catch (_) {}
+      return `• ${a.nome || 'sem nome'} — ${a.plano || 'visitante'}${a.prioritario ? ' ⭐' : ''} (wa.me/${a.cliente})${quando ? ` — ${quando}` : ''}`;
+    });
+    await sendText(
+      admin,
+      `⏳ *Enquanto você esteve fora:* ${snap.size} pedido(s) de atendimento humano\n\n${linhas.join('\n')}\n\nToque no link para responder o cliente.`
+    );
+    const batch = db.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    console.log('[wa-bot] Fila de alertas entregue para', admin, `(${snap.size})`);
+  } catch (err) {
+    console.error('[wa-bot] Falha ao entregar fila de alertas:', err.message);
+  }
+}
+
 // ------------------------------------------------------------
 // Cliente AdGain: identificação pelo número (users.phoneDigits)
 // e plano efetivo (campos planos primeiro; profile.subscription é legado)
@@ -200,6 +277,7 @@ setInterval(() => {
   _sweep(humanMode, HUMAN_MODE_TTL_MS);
   const now = Date.now();
   for (const [k, v] of chatHistory) if (now - v.ts > CHAT_HISTORY_TTL_MS) chatHistory.delete(k);
+  for (const [k, v] of alertsByWamid) if (now - v.ts > ALERT_TRACK_TTL_MS) alertsByWamid.delete(k);
 }, 5 * 60 * 1000).unref();
 
 // ------------------------------------------------------------
@@ -343,13 +421,22 @@ const OPTION_HANDLERS = {
     }
     const nome = (user && user.nome) || (ctx && ctx.profileName) || 'sem nome';
     const plano = user ? PLAN_NAMES[user.plano] || user.plano : 'visitante';
+    const alerta = { cliente: to, nome, plano, prioritario, criado: new Date().toISOString() };
     for (const admin of adminNumbers()) {
-      await sendText(
+      const r = await sendText(
         admin,
         `🔔 *Pedido de atendimento humano*${prioritario ? ' ⭐ PRIORITÁRIO' : ''}\n` +
           `Cliente: ${nome} — plano ${plano} (wa.me/${to})\n` +
           'Responda pelo WhatsApp Business.'
       );
+      const wamid = r && r.messages && r.messages[0] && r.messages[0].id;
+      if (wamid) {
+        // Falha de entrega chega async via status webhook — rastreamos p/ enfileirar
+        alertsByWamid.set(wamid, { ...alerta, ts: Date.now() });
+      } else {
+        // Falha síncrona no envio: enfileira direto
+        await queuePendingAlert(alerta);
+      }
     }
   },
 };
@@ -368,6 +455,12 @@ function matchShortcut(text) {
 async function handleIncomingMessage(msg, contacts) {
   const from = msg.from; // wa_id do cliente (E.164 sem '+')
   const profileName = contacts && contacts[0] && contacts[0].profile && contacts[0].profile.name;
+
+  // Mensagem de um humano do suporte: primeiro entrega alertas represados
+  // (a janela de 24h acabou de abrir), depois segue o fluxo normal
+  if (isAdmin(from)) {
+    await flushPendingAlerts(from);
+  }
 
   // Cliente em modo humano: bot fica em silêncio (a equipe responde pelo app)
   if (humanMode.has(from)) {
@@ -444,6 +537,11 @@ module.exports = function registerWhatsAppBot(app) {
           }
           // Statuses de entrega (sent/delivered/read/failed) — guardados p/ diagnóstico
           for (const st of value.statuses || []) {
+            // Alerta p/ admin não entregue (janela de 24h fechada)? Vai p/ a fila.
+            if (st.status === 'failed' && alertsByWamid.has(st.id)) {
+              queuePendingAlert(alertsByWamid.get(st.id)).catch(() => {});
+              alertsByWamid.delete(st.id);
+            }
             lastStatuses.push({
               quando: new Date().toISOString(),
               para: st.recipient_id,
