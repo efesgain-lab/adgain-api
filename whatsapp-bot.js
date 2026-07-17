@@ -19,6 +19,7 @@
 const GRAPH_VERSION = 'v23.0';
 const { getDb } = require('./firebase');
 const Anthropic = require('@anthropic-ai/sdk');
+const { PLAN_NAMES, PRIORITY_PLANS, getPlanosText, buildSystemPrompt } = require('./bot-knowledge');
 
 let anthropicClient = null;
 function getAnthropic() {
@@ -181,16 +182,6 @@ async function flushPendingAlerts(admin) {
 // Cliente AdGain: identificação pelo número (users.phoneDigits)
 // e plano efetivo (campos planos primeiro; profile.subscription é legado)
 // ------------------------------------------------------------
-const PLAN_NAMES = {
-  gratuito: 'Gratuito',
-  essencial: 'Essencial',
-  profissional: 'Profissional',
-  empresarial: 'Empresarial',
-  premium: 'Premium',
-  enterprise: 'Premium',
-};
-const PRIORITY_PLANS = ['empresarial', 'premium', 'enterprise'];
-
 async function lookupUser(waId) {
   const hit = userCache.get(waId);
   if (hit && Date.now() - hit.ts < USER_CACHE_TTL_MS) return hit.user;
@@ -225,48 +216,7 @@ async function lookupUser(waId) {
   return user;
 }
 
-// ------------------------------------------------------------
-// Preços vivos (credit_config/pricing — mesma fonte do site/checkout)
-// ------------------------------------------------------------
-let pricingCache = { text: null, ts: 0 };
-const PRICING_CACHE_TTL_MS = 10 * 60 * 1000;
-
-async function getPlanosText() {
-  if (pricingCache.text && Date.now() - pricingCache.ts < PRICING_CACHE_TTL_MS) {
-    return pricingCache.text;
-  }
-  try {
-    const db = getDb();
-    if (db) {
-      const doc = await db.doc('credit_config/pricing').get();
-      const plans = doc.exists && Array.isArray(doc.data().plans) ? doc.data().plans : null;
-      if (plans && plans.length) {
-        const fmt = (c) =>
-          !c || c <= 0 ? 'Grátis' : 'R$ ' + (c / 100).toFixed(2).replace('.', ',') + '/mês';
-        const linhas = plans
-          .slice()
-          .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
-          .map((p) => {
-            const extras = [];
-            if (p.creditsPerMonth) extras.push(`${p.creditsPerMonth} créditos/mês`);
-            if (p.maxPhotosPerAd) extras.push(`${p.maxPhotosPerAd} fotos por anúncio`);
-            return `▫️ *${p.name}* — ${fmt(p.priceInCents)}${extras.length ? `\n   ${extras.join(' • ')}` : ''}`;
-          });
-        pricingCache = {
-          text:
-            '🌱 *Planos AdGain*:\n\n' +
-            linhas.join('\n') +
-            '\n\nCompare os recursos e assine em: www.adgain.com.br/plans',
-          ts: Date.now(),
-        };
-        return pricingCache.text;
-      }
-    }
-  } catch (err) {
-    console.error('[wa-bot] preços vivos falharam:', err.message);
-  }
-  return KB.planos; // fallback estático
-}
+// Preços vivos: getPlanosText importado de bot-knowledge.js
 
 function _sweep(map, ttl) {
   const now = Date.now();
@@ -283,35 +233,15 @@ setInterval(() => {
 // ------------------------------------------------------------
 // Fase C2: Claude responde perguntas livres (fora do menu)
 // ------------------------------------------------------------
-const BOT_BASE_PROMPT = `Você é o assistente virtual oficial da AdGain (www.adgain.com.br), marketplace brasileiro de compra e venda de terras e imóveis rurais com análise técnica por satélite. Você atende clientes pelo WhatsApp.
-
-SOBRE A ADGAIN:
-- Anunciantes publicam propriedades rurais (fazendas, sítios, chácaras, lotes) e compradores as encontram no site.
-- Diferencial: a ANÁLISE TÉCNICA — o usuário seleciona a parcela no mapa (SIGEF/CAR) e em ~2 minutos recebe um raio-X da terra: CAR e conformidade ambiental, desmatamento (PRODES/DETER), queimadas, solos, relevo, clima, recursos hídricos, aptidão para pivôs centrais, infraestrutura, logística e laudo geológico por IA. A análise pode virar relatório completo e selo de qualidade no anúncio.
-- CRÉDITOS: moeda interna do site. Servem para desbloquear seções de análises e relatórios. Assinantes ganham créditos todo mês (conforme o plano) e qualquer um pode comprar créditos avulsos. Anunciantes ganham parte dos créditos (reward) quando compradores desbloqueiam seções do anúncio deles.
-- COMO ANUNCIAR: entrar em www.adgain.com.br → Anunciar → escolher "pelo mapa" (seleciona a parcela SIGEF/CAR e pode rodar a análise) ou "cadastro manual". O rascunho fica salvo e sincroniza entre dispositivos. Quantidade de fotos por anúncio depende do plano.
-- ESTATÍSTICAS: planos pagos têm painel de estatísticas básicas dos anúncios; Empresarial e Premium têm analytics completo por anúncio (gráficos, funil, origem do tráfego, PDF).
-- SUPORTE HUMANO: seg-sex, 8h às 18h. Para falar com a equipe, o cliente digita *humano* (ou escolhe a opção 4 do menu). Digitar *menu* mostra o menu de opções.
-
-REGRAS DE RESPOSTA:
-- Responda em português brasileiro, tom cordial e direto, estilo WhatsApp: mensagens CURTAS (idealmente até 500 caracteres), sem cabeçalhos, use *negrito* com moderação e no máximo 1-2 emojis.
-- Use APENAS as informações deste prompt (incluindo os preços abaixo). NUNCA invente preços, prazos, funcionalidades ou políticas. Se não souber ou o assunto for delicado (pagamento não reconhecido, problema técnico, cancelamento, dados pessoais), diga que a equipe pode ajudar e oriente a digitar *humano*.
-- Só trate de assuntos da AdGain. Para qualquer outro tema, redirecione com simpatia para o que você pode ajudar.
-- Não peça nem registre dados sensíveis (senhas, cartões).`;
-
 async function askClaude(from, texto, user) {
   const client = getAnthropic();
   if (!client) return null;
   try {
-    const precos = await getPlanosText();
-    const contexto = user
-      ? `\n\nCLIENTE ATUAL: ${user.nome || 'sem nome'} — plano ${PLAN_NAMES[user.plano] || user.plano}. Personalize quando fizer sentido.`
-      : '\n\nCLIENTE ATUAL: ainda não identificado como usuário cadastrado (visitante).';
     const hist = (chatHistory.get(from) && chatHistory.get(from).msgs) || [];
     const resp = await client.messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 400,
-      system: `${BOT_BASE_PROMPT}\n\nPREÇOS E PLANOS ATUAIS (fonte oficial, use exatamente estes valores):\n${precos}${contexto}`,
+      system: await buildSystemPrompt('whatsapp', user),
       messages: [...hist, { role: 'user', content: texto }],
     });
     const answer = resp.content

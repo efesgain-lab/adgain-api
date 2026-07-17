@@ -5252,6 +5252,9 @@ app.get('/api/test-geol-parcela', async (req, res) => {
 // Bot de atendimento WhatsApp (Cloud API) — rotas /api/whatsapp/webhook
 require('./whatsapp-bot')(app);
 
+// Chat do site (mesmo cérebro do bot) — rota /api/chat
+require('./site-chat')(app);
+
 // Catch-all 404
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
