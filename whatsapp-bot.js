@@ -18,6 +18,15 @@
 
 const GRAPH_VERSION = 'v23.0';
 const { getDb } = require('./firebase');
+const Anthropic = require('@anthropic-ai/sdk');
+
+let anthropicClient = null;
+function getAnthropic() {
+  if (!anthropicClient && process.env.ANTHROPIC_API_KEY) {
+    anthropicClient = new Anthropic();
+  }
+  return anthropicClient;
+}
 
 // ------------------------------------------------------------
 // Base de conhecimento (Fase B: estática — espelha as respostas
@@ -75,9 +84,20 @@ const processedMsgs = new Map(); // msgId -> timestamp (dedup de retries do webh
 const humanMode = new Map(); // waId -> timestamp (bot silencia após pedir humano)
 const lastStatuses = []; // últimos statuses de entrega (diagnóstico via /api/whatsapp/status)
 const userCache = new Map(); // waId -> { user: {uid,nome,plano}|null, ts }
+const chatHistory = new Map(); // waId -> { msgs: [{role,content}], ts } (contexto do Claude)
 const PROCESSED_TTL_MS = 10 * 60 * 1000;
 const HUMAN_MODE_TTL_MS = 12 * 60 * 60 * 1000;
 const USER_CACHE_TTL_MS = 10 * 60 * 1000;
+const CHAT_HISTORY_TTL_MS = 2 * 60 * 60 * 1000;
+
+// Humanos do suporte: lista separada por vírgula em ADMIN_WHATSAPP
+// (E.164 sem '+', ex.: "5565999988127,5565998180637")
+function adminNumbers() {
+  return (process.env.ADMIN_WHATSAPP || '')
+    .split(',')
+    .map((n) => n.trim())
+    .filter(Boolean);
+}
 
 // ------------------------------------------------------------
 // Cliente AdGain: identificação pelo número (users.phoneDigits)
@@ -177,7 +197,60 @@ function _sweep(map, ttl) {
 setInterval(() => {
   _sweep(processedMsgs, PROCESSED_TTL_MS);
   _sweep(humanMode, HUMAN_MODE_TTL_MS);
+  const now = Date.now();
+  for (const [k, v] of chatHistory) if (now - v.ts > CHAT_HISTORY_TTL_MS) chatHistory.delete(k);
 }, 5 * 60 * 1000).unref();
+
+// ------------------------------------------------------------
+// Fase C2: Claude responde perguntas livres (fora do menu)
+// ------------------------------------------------------------
+const BOT_BASE_PROMPT = `Você é o assistente virtual oficial da AdGain (www.adgain.com.br), marketplace brasileiro de compra e venda de terras e imóveis rurais com análise técnica por satélite. Você atende clientes pelo WhatsApp.
+
+SOBRE A ADGAIN:
+- Anunciantes publicam propriedades rurais (fazendas, sítios, chácaras, lotes) e compradores as encontram no site.
+- Diferencial: a ANÁLISE TÉCNICA — o usuário seleciona a parcela no mapa (SIGEF/CAR) e em ~2 minutos recebe um raio-X da terra: CAR e conformidade ambiental, desmatamento (PRODES/DETER), queimadas, solos, relevo, clima, recursos hídricos, aptidão para pivôs centrais, infraestrutura, logística e laudo geológico por IA. A análise pode virar relatório completo e selo de qualidade no anúncio.
+- CRÉDITOS: moeda interna do site. Servem para desbloquear seções de análises e relatórios. Assinantes ganham créditos todo mês (conforme o plano) e qualquer um pode comprar créditos avulsos. Anunciantes ganham parte dos créditos (reward) quando compradores desbloqueiam seções do anúncio deles.
+- COMO ANUNCIAR: entrar em www.adgain.com.br → Anunciar → escolher "pelo mapa" (seleciona a parcela SIGEF/CAR e pode rodar a análise) ou "cadastro manual". O rascunho fica salvo e sincroniza entre dispositivos. Quantidade de fotos por anúncio depende do plano.
+- ESTATÍSTICAS: planos pagos têm painel de estatísticas básicas dos anúncios; Empresarial e Premium têm analytics completo por anúncio (gráficos, funil, origem do tráfego, PDF).
+- SUPORTE HUMANO: seg-sex, 8h às 18h. Para falar com a equipe, o cliente digita *humano* (ou escolhe a opção 4 do menu). Digitar *menu* mostra o menu de opções.
+
+REGRAS DE RESPOSTA:
+- Responda em português brasileiro, tom cordial e direto, estilo WhatsApp: mensagens CURTAS (idealmente até 500 caracteres), sem cabeçalhos, use *negrito* com moderação e no máximo 1-2 emojis.
+- Use APENAS as informações deste prompt (incluindo os preços abaixo). NUNCA invente preços, prazos, funcionalidades ou políticas. Se não souber ou o assunto for delicado (pagamento não reconhecido, problema técnico, cancelamento, dados pessoais), diga que a equipe pode ajudar e oriente a digitar *humano*.
+- Só trate de assuntos da AdGain. Para qualquer outro tema, redirecione com simpatia para o que você pode ajudar.
+- Não peça nem registre dados sensíveis (senhas, cartões).`;
+
+async function askClaude(from, texto, user) {
+  const client = getAnthropic();
+  if (!client) return null;
+  try {
+    const precos = await getPlanosText();
+    const contexto = user
+      ? `\n\nCLIENTE ATUAL: ${user.nome || 'sem nome'} — plano ${PLAN_NAMES[user.plano] || user.plano}. Personalize quando fizer sentido.`
+      : '\n\nCLIENTE ATUAL: ainda não identificado como usuário cadastrado (visitante).';
+    const hist = (chatHistory.get(from) && chatHistory.get(from).msgs) || [];
+    const resp = await client.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 400,
+      system: `${BOT_BASE_PROMPT}\n\nPREÇOS E PLANOS ATUAIS (fonte oficial, use exatamente estes valores):\n${precos}${contexto}`,
+      messages: [...hist, { role: 'user', content: texto }],
+    });
+    const answer = resp.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+    if (!answer) return null;
+    chatHistory.set(from, {
+      msgs: [...hist, { role: 'user', content: texto }, { role: 'assistant', content: answer }].slice(-8),
+      ts: Date.now(),
+    });
+    return answer;
+  } catch (err) {
+    console.error('[wa-bot] Claude falhou:', err.message);
+    return null;
+  }
+}
 
 // ------------------------------------------------------------
 // Envio via Graph API
@@ -267,10 +340,9 @@ const OPTION_HANDLERS = {
     } else {
       await sendText(to, KB.humano);
     }
-    const admin = process.env.ADMIN_WHATSAPP;
-    if (admin) {
-      const nome = (user && user.nome) || (ctx && ctx.profileName) || 'sem nome';
-      const plano = user ? PLAN_NAMES[user.plano] || user.plano : 'visitante';
+    const nome = (user && user.nome) || (ctx && ctx.profileName) || 'sem nome';
+    const plano = user ? PLAN_NAMES[user.plano] || user.plano : 'visitante';
+    for (const admin of adminNumbers()) {
       await sendText(
         admin,
         `🔔 *Pedido de atendimento humano*${prioritario ? ' ⭐ PRIORITÁRIO' : ''}\n` +
@@ -325,8 +397,9 @@ async function handleIncomingMessage(msg, contacts) {
     const shortcut = matchShortcut(msg.text.body);
     if (shortcut === 'menu') return sendMenu(from, user);
     if (shortcut && OPTION_HANDLERS[shortcut]) return OPTION_HANDLERS[shortcut](from, ctx);
-    // Fase C2: pergunta livre -> Claude com base de conhecimento.
-    return sendText(from, KB.foraDoEscopo);
+    // Fase C2: pergunta livre -> Claude com a base de conhecimento
+    const resposta = await askClaude(from, msg.text.body, user);
+    return sendText(from, resposta || KB.foraDoEscopo);
   }
 
   // Áudio, imagem, sticker etc.: orienta para o menu
