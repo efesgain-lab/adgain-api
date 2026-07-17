@@ -88,23 +88,14 @@ function phoneVariants(telefone) {
   return [...out];
 }
 
-async function identifyLead(lead) {
+async function identifyLead(lead, pergunta) {
   if (!lead || !lead.telefone) return null;
   const variants = phoneVariants(lead.telefone);
   const nomeForm = String(lead.nome || '').slice(0, 80).trim() || null;
+  let matched = null;
   try {
     const db = getDb();
     if (!db) return nomeForm ? { nome: nomeForm, plano: 'gratuito' } : null;
-    // registra/atualiza o lead (fire-and-forget)
-    if (variants[0]) {
-      db.collection('site_chat_leads')
-        .doc(variants[0])
-        .set(
-          { nome: nomeForm, telefone: variants[0], ultimoContato: new Date().toISOString() },
-          { merge: true }
-        )
-        .catch(() => {});
-    }
     for (const v of variants) {
       const snap = await db
         .collection('users')
@@ -113,13 +104,31 @@ async function identifyLead(lead) {
         .get();
       if (!snap.empty) {
         const d = snap.docs[0].data() || {};
-        return { uid: snap.docs[0].id, nome: d.displayName || nomeForm, plano: planoDoDoc(d) };
+        matched = { uid: snap.docs[0].id, nome: d.displayName || nomeForm, plano: planoDoDoc(d) };
+        break;
       }
+    }
+    // registra/atualiza o lead (fire-and-forget), com contexto p/ o admin
+    if (variants[0]) {
+      db.collection('site_chat_leads')
+        .doc(variants[0])
+        .set(
+          {
+            nome: nomeForm,
+            telefone: variants[0],
+            ultimoContato: new Date().toISOString(),
+            uid: matched ? matched.uid : null,
+            plano: matched ? matched.plano : null,
+            ...(pergunta ? { ultimaPergunta: String(pergunta).slice(0, 200) } : {}),
+          },
+          { merge: true }
+        )
+        .catch(() => {});
     }
   } catch (err) {
     console.warn('[site-chat] lookup por telefone falhou:', err.message);
   }
-  return nomeForm ? { nome: nomeForm, plano: 'gratuito' } : null;
+  return matched || (nomeForm ? { nome: nomeForm, plano: 'gratuito' } : null);
 }
 
 module.exports = function registerSiteChat(app) {
@@ -157,9 +166,10 @@ module.exports = function registerSiteChat(app) {
       }
 
       // Identidade (opcional) e limites: login > telefone do formulário > anônimo
+      const ultimaPergunta = limpas[limpas.length - 1].content;
       const user =
         (await identifyUser(req.headers['x-firebase-token'])) ||
-        (await identifyLead(req.body && req.body.lead));
+        (await identifyLead(req.body && req.body.lead, ultimaPergunta));
       const ip =
         (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
         req.socket.remoteAddress ||
