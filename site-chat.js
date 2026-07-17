@@ -10,7 +10,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { getDb } = require('./firebase');
-const { PLAN_NAMES, buildSystemPrompt } = require('./bot-knowledge');
+const { PLAN_NAMES, buildSystemPrompt, cannedAnswer } = require('./bot-knowledge');
 
 let anthropicClient = null;
 function getAnthropic() {
@@ -125,6 +125,16 @@ async function identifyLead(lead) {
 module.exports = function registerSiteChat(app) {
   app.post('/api/chat', async (req, res) => {
     try {
+      // Atalho de menu: resposta pronta, custo zero (não aciona o Claude
+      // nem consome o limite do visitante)
+      if (req.body && req.body.opcao) {
+        const pronta = await cannedAnswer(String(req.body.opcao));
+        if (!pronta) return res.status(400).json({ erro: 'opção inválida' });
+        // registra o lead mesmo no caminho do menu
+        identifyLead(req.body.lead).catch(() => {});
+        return res.json({ resposta: pronta });
+      }
+
       const client = getAnthropic();
       if (!client) return res.status(503).json({ erro: 'chat indisponível' });
 

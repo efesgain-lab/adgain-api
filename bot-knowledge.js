@@ -103,4 +103,48 @@ async function buildSystemPrompt(canal, user) {
   );
 }
 
-module.exports = { PLAN_NAMES, PRIORITY_PLANS, PLANOS_FALLBACK, getPlanosText, buildSystemPrompt };
+// Respostas prontas (custo zero — não acionam o Claude), compartilhadas
+// entre o menu do WhatsApp e os atalhos do chat do site
+const CANNED = {
+  anunciar:
+    '🏡 *Como anunciar sua propriedade na AdGain*\n\n' +
+    '1️⃣ Acesse www.adgain.com.br e faça login\n' +
+    '2️⃣ Clique em *Anunciar* e escolha o caminho:\n' +
+    '▫️ *Pelo mapa*: selecione sua parcela (SIGEF/CAR) e, se quiser, rode a análise técnica — ela vira um selo de qualidade no anúncio\n' +
+    '▫️ *Cadastro manual*: preencha os dados direto no formulário\n' +
+    '3️⃣ Adicione fotos, valor e publique!\n\n' +
+    '💡 Se parar no meio, seu rascunho fica salvo e você continua de onde parou, em qualquer dispositivo.',
+
+  analise:
+    '🛰️ *Análise técnica AdGain — o raio-X da sua terra*\n\n' +
+    'Você seleciona a parcela no mapa e em ~2 minutos recebe:\n' +
+    '▫️ CAR e conformidade ambiental\n' +
+    '▫️ Desmatamento (PRODES/DETER) e queimadas\n' +
+    '▫️ Solos, relevo, clima e recursos hídricos\n' +
+    '▫️ Aptidão para pivôs centrais e fontes de água\n' +
+    '▫️ Infraestrutura, logística e laudo geológico por IA\n\n' +
+    'Tudo pode virar um *relatório completo* para valorizar seu anúncio ou apoiar sua decisão de compra.',
+
+  creditos:
+    '💳 *Créditos AdGain — como funcionam*\n\n' +
+    'Créditos são a moeda interna do site. Com eles você desbloqueia seções de análises e relatórios.\n\n' +
+    '▫️ *Assinantes* ganham créditos todo mês, conforme o plano\n' +
+    '▫️ Qualquer pessoa pode *comprar créditos avulsos* na página de planos\n' +
+    '▫️ *Anunciantes ganham de volta*: quando um comprador desbloqueia seções do seu anúncio, parte dos créditos vira recompensa para você\n\n' +
+    'Veja os pacotes em: www.adgain.com.br/plans',
+};
+
+async function cannedAnswer(id) {
+  if (id === 'planos') return getPlanosText();
+  return CANNED[id] || null;
+}
+
+module.exports = {
+  PLAN_NAMES,
+  PRIORITY_PLANS,
+  PLANOS_FALLBACK,
+  getPlanosText,
+  buildSystemPrompt,
+  CANNED,
+  cannedAnswer,
+};

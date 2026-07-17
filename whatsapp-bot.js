@@ -19,7 +19,13 @@
 const GRAPH_VERSION = 'v23.0';
 const { getDb } = require('./firebase');
 const Anthropic = require('@anthropic-ai/sdk');
-const { PLAN_NAMES, PRIORITY_PLANS, getPlanosText, buildSystemPrompt } = require('./bot-knowledge');
+const {
+  PLAN_NAMES,
+  PRIORITY_PLANS,
+  getPlanosText,
+  buildSystemPrompt,
+  CANNED,
+} = require('./bot-knowledge');
 
 let anthropicClient = null;
 function getAnthropic() {
@@ -47,25 +53,11 @@ const KB = {
     '▫️ *Premium* — R$ 99,90 (800 créditos/mês, 15 fotos, analytics completo, suporte VIP)\n\n' +
     'Compare e assine em: www.adgain.com.br/plans',
 
-  anunciar:
-    '🏡 *Como anunciar sua propriedade na AdGain*\n\n' +
-    '1️⃣ Acesse www.adgain.com.br e faça login\n' +
-    '2️⃣ Clique em *Anunciar* e escolha o caminho:\n' +
-    '▫️ *Pelo mapa*: selecione sua parcela (SIGEF/CAR) e, se quiser, rode a análise técnica — ela vira um selo de qualidade no anúncio\n' +
-    '▫️ *Cadastro manual*: preencha os dados direto no formulário\n' +
-    '3️⃣ Adicione fotos, valor e publique!\n\n' +
-    '💡 Se parar no meio, seu rascunho fica salvo e você continua de onde parou, em qualquer dispositivo.',
+  anunciar: CANNED.anunciar,
 
   analise:
-    '🛰️ *Análise técnica AdGain — o raio-X da sua terra*\n\n' +
-    'Você seleciona a parcela no mapa e em ~2 minutos recebe:\n' +
-    '▫️ CAR e conformidade ambiental\n' +
-    '▫️ Desmatamento (PRODES/DETER) e queimadas\n' +
-    '▫️ Solos, relevo, clima e recursos hídricos\n' +
-    '▫️ Aptidão para pivôs centrais e fontes de água\n' +
-    '▫️ Infraestrutura, logística e laudo geológico por IA\n\n' +
-    'Tudo pode virar um *relatório completo* para valorizar seu anúncio ou apoiar sua decisão de compra.\n\n' +
-    'Se sua análise apresentou algum problema, digite *humano* que nossa equipe verifica para você.',
+    CANNED.analise +
+    '\n\nSe sua análise apresentou algum problema, digite *humano* que nossa equipe verifica para você.',
 
   humano:
     '👤 Certo! Encaminhei sua conversa para a nossa equipe.\n\n' +
