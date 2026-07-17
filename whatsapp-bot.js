@@ -90,10 +90,11 @@ const HUMAN_MODE_TTL_MS = 12 * 60 * 60 * 1000;
 const USER_CACHE_TTL_MS = 10 * 60 * 1000;
 const CHAT_HISTORY_TTL_MS = 2 * 60 * 60 * 1000;
 
-// Humanos do suporte: lista separada por vírgula em ADMIN_WHATSAPP
-// (E.164 sem '+', ex.: "5565999988127,5565998180637")
+// Humanos do suporte: lista separada por vírgula (E.164 sem '+').
+// Padrão: linha empresarial (Nilton) + Miguel; sobrescrevível via ADMIN_WHATSAPP.
+const DEFAULT_ADMINS = '5565999988127,5565998180637';
 function adminNumbers() {
-  return (process.env.ADMIN_WHATSAPP || '')
+  return (process.env.ADMIN_WHATSAPP || DEFAULT_ADMINS)
     .split(',')
     .map((n) => n.trim())
     .filter(Boolean);
