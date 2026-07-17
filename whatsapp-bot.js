@@ -25,6 +25,7 @@ const {
   getPlanosText,
   buildSystemPrompt,
   CANNED,
+  cannedAnswer,
 } = require('./bot-knowledge');
 
 let anthropicClient = null;
@@ -310,7 +311,9 @@ function sendMenu(to, user) {
               { id: 'op_planos', title: '1️⃣ Planos e créditos', description: 'Preços, créditos mensais e assinatura' },
               { id: 'op_anunciar', title: '2️⃣ Como anunciar', description: 'Passo a passo para publicar sua terra' },
               { id: 'op_analise', title: '3️⃣ Análise técnica', description: 'O raio-X da sua propriedade' },
-              { id: 'op_humano', title: '4️⃣ Falar com humano', description: 'Equipe AdGain — exclusivo para assinantes' },
+              { id: 'op_ganhos', title: '4️⃣ Ganhos ao anunciar', description: 'Recompensas e saque via Pix' },
+              { id: 'op_niveis', title: '5️⃣ Níveis e validação', description: 'Hierarquia de ganhos por perfil' },
+              { id: 'op_humano', title: '6️⃣ Falar com humano', description: 'Equipe AdGain — exclusivo para assinantes' },
             ],
           },
         ],
@@ -326,6 +329,8 @@ const OPTION_HANDLERS = {
   op_planos: async (to) => sendText(to, await getPlanosText()),
   op_anunciar: (to) => sendText(to, KB.anunciar),
   op_analise: (to) => sendText(to, KB.analise),
+  op_ganhos: async (to) => sendText(to, await cannedAnswer('ganhos')),
+  op_niveis: async (to) => sendText(to, await cannedAnswer('niveis')),
   op_humano: async (to, ctx) => {
     const user = ctx && ctx.user;
     // Atendimento humano: benefício exclusivo de plano pago ativo
@@ -379,7 +384,9 @@ function matchShortcut(text) {
   if (/^(1|planos?|creditos?|créditos?|preços?|precos?)$/.test(t)) return 'op_planos';
   if (/^(2|anunciar|anuncio|anúncio|vender)$/.test(t)) return 'op_anunciar';
   if (/^(3|analise|análise|relatorio|relatório)$/.test(t)) return 'op_analise';
-  if (/^(4|humano|atendente|pessoa|suporte)$/.test(t)) return 'op_humano';
+  if (/^(4|ganhos?|recompensas?|saque)$/.test(t)) return 'op_ganhos';
+  if (/^(5|niveis|níveis|nivel|nível|validacao|validação)$/.test(t)) return 'op_niveis';
+  if (/^(6|humano|atendente|pessoa|suporte)$/.test(t)) return 'op_humano';
   if (/^(menu|oi|ola|olá|bom dia|boa tarde|boa noite|inicio|início|start)$/.test(t)) return 'menu';
   return null;
 }

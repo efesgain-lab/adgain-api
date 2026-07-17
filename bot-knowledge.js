@@ -72,7 +72,8 @@ const BOT_CORE = `Você é o assistente virtual oficial da AdGain (www.adgain.co
 SOBRE A ADGAIN:
 - Anunciantes publicam propriedades rurais (fazendas, sítios, chácaras, lotes) e compradores as encontram no site.
 - Diferencial: a ANÁLISE TÉCNICA — o usuário seleciona a parcela no mapa (SIGEF/CAR) e em ~2 minutos recebe um raio-X completo da terra: ambiental (CAR, Reserva Legal e conformidade, desmatamento PRODES/DETER, embargos), sobreposições (terras indígenas, unidades de conservação, requerimentos minerários), a terra em si (solos, carbono do solo, geologia com laudo por IA, altitude, relevo, bioma), água e clima (hidrografia, aquíferos, histórico de chuvas, aptidão para pivôs centrais com fontes de água), documental (situação fundiária SIGEF e registral/matrícula) e produção (infraestrutura, logística de escoamento, silos/armazéns próximos). A análise pode virar relatório completo e selo de qualidade no anúncio.
-- CRÉDITOS: moeda interna do site. Servem para desbloquear seções de análises e relatórios. Assinantes ganham créditos todo mês (conforme o plano) e qualquer um pode comprar créditos avulsos. Anunciantes ganham parte dos créditos (reward) quando compradores desbloqueiam seções do anúncio deles.
+- CRÉDITOS: moeda interna do site. Servem para desbloquear seções de análises e relatórios. Assinantes ganham créditos todo mês (conforme o plano) e qualquer um pode comprar créditos avulsos. Anunciantes ganham parte dos créditos (reward) quando compradores desbloqueiam seções do anúncio deles; os ganhos podem ser sacados via Pix (aba Meus Ganhos).
+- NÍVEIS DE ANUNCIANTE (hierarquia de ganhos): Comum (sem validação, menor % de recompensa) → Intermediador validado (corretor envia carta de autorização do proprietário; equipe aprova; selo no anúncio) → Proprietário validado (maior %; CPF/CNPJ conferido automaticamente com o titular oficial no SIGEF/CCIR ao anunciar pelo mapa, inclusive sócios da empresa titular). Perfis validados têm multiplicador de confiança: seções valem mais créditos e a recompensa aumenta.
 - COMO ANUNCIAR: entrar em www.adgain.com.br → Anunciar → escolher "pelo mapa" (seleciona a parcela SIGEF/CAR e pode rodar a análise) ou "cadastro manual". O rascunho fica salvo e sincroniza entre dispositivos. Quantidade de fotos por anúncio depende do plano.
 - ESTATÍSTICAS: planos pagos têm painel de estatísticas básicas dos anúncios; Empresarial e Premium têm analytics completo por anúncio (gráficos, funil, origem do tráfego, PDF).
 - SUPORTE HUMANO: seg-sex, 8h às 18h.
@@ -171,8 +172,48 @@ const CANNED = {
     'Veja os pacotes em: www.adgain.com.br/plans',
 };
 
+// Hierarquia de ganhos por nível de anunciante (percentuais vivos do
+// credit_config/global.revenueShareRules; fallback = padrões do produto)
+let hierarquiaCache = { text: null, ts: 0 };
+
+async function getHierarquiaText() {
+  if (hierarquiaCache.text && Date.now() - hierarquiaCache.ts < PRICING_CACHE_TTL_MS) {
+    return hierarquiaCache.text;
+  }
+  let rules = {
+    common: { percentage: 0.2 },
+    intermediary_validated: { percentage: 0.25 },
+    owner_validated: { percentage: 0.3 },
+  };
+  try {
+    const db = getDb();
+    if (db) {
+      const doc = await db.doc('credit_config/global').get();
+      const r = doc.exists && doc.data().revenueShareRules;
+      if (r) rules = { ...rules, ...r };
+    }
+  } catch (err) {
+    console.error('[bot] revenueShareRules falhou:', err.message);
+  }
+  const pct = (x) => `${Math.round(((x && x.percentage) || 0) * 100)}%`;
+  const text =
+    '🏅 *Níveis de anunciante e hierarquia de ganhos*\n\n' +
+    'Quando um comprador desbloqueia seções do seu anúncio, parte dos créditos vira recompensa sua. O percentual depende do seu nível de validação:\n\n' +
+    `▫️ *Comum* — ${pct(rules.common)} de recompensa\n` +
+    '   Qualquer anunciante, sem validação\n\n' +
+    `▫️ *Intermediador validado* — ${pct(rules.intermediary_validated)}\n` +
+    '   Para corretores/intermediários: você envia a *carta de autorização* assinada pelo proprietário, a equipe AdGain confere e o anúncio ganha o selo\n\n' +
+    `▫️ *Proprietário validado* — ${pct(rules.owner_validated)}\n` +
+    '   Ao anunciar pelo mapa com o código do imóvel, seu CPF/CNPJ é conferido *automaticamente* com o titular oficial nos registros do governo (SIGEF/CCIR — vale também para sócios da empresa titular)\n\n' +
+    'Perfis validados transmitem mais confiança: as seções do anúncio valem mais créditos para o comprador — e sua recompensa cresce junto. 💰\n\n' +
+    'Acompanhe em *Meus Ganhos*: www.adgain.com.br/plans';
+  hierarquiaCache = { text, ts: Date.now() };
+  return text;
+}
+
 async function cannedAnswer(id) {
   if (id === 'planos') return getPlanosText();
+  if (id === 'niveis') return getHierarquiaText();
   return CANNED[id] || null;
 }
 
