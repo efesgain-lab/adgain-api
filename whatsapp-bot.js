@@ -313,7 +313,6 @@ function sendMenu(to, user) {
               { id: 'op_analise', title: '3️⃣ Análise técnica', description: 'O raio-X da sua propriedade' },
               { id: 'op_ganhos', title: '4️⃣ Ganhos ao anunciar', description: 'Recompensas e saque via Pix' },
               { id: 'op_niveis', title: '5️⃣ Níveis e validação', description: 'Hierarquia de ganhos por perfil' },
-              { id: 'op_humano', title: '6️⃣ Falar com humano', description: 'Equipe AdGain — exclusivo para assinantes' },
             ],
           },
         ],
