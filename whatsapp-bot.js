@@ -310,7 +310,7 @@ function sendMenu(to, user) {
               { id: 'op_planos', title: '1️⃣ Planos e créditos', description: 'Preços, créditos mensais e assinatura' },
               { id: 'op_anunciar', title: '2️⃣ Como anunciar', description: 'Passo a passo para publicar sua terra' },
               { id: 'op_analise', title: '3️⃣ Análise técnica', description: 'O raio-X da sua propriedade' },
-              { id: 'op_humano', title: '4️⃣ Falar com humano', description: 'Atendimento com a nossa equipe' },
+              { id: 'op_humano', title: '4️⃣ Falar com humano', description: 'Equipe AdGain — exclusivo para assinantes' },
             ],
           },
         ],
@@ -327,9 +327,19 @@ const OPTION_HANDLERS = {
   op_anunciar: (to) => sendText(to, KB.anunciar),
   op_analise: (to) => sendText(to, KB.analise),
   op_humano: async (to, ctx) => {
-    humanMode.set(to, Date.now());
     const user = ctx && ctx.user;
-    const prioritario = user && PRIORITY_PLANS.includes(user.plano);
+    // Atendimento humano: benefício exclusivo de plano pago ativo
+    const pago = user && user.plano && user.plano !== 'gratuito';
+    if (!pago) {
+      return sendText(
+        to,
+        '👤 O atendimento com a nossa equipe é um benefício dos *planos pagos* AdGain.\n\n' +
+          'Mas não te deixo na mão: manda sua dúvida aqui que eu resolvo com você! 💪\n\n' +
+          'E se quiser contar com a equipe (e muito mais), conheça os planos: www.adgain.com.br/plans'
+      );
+    }
+    humanMode.set(to, Date.now());
+    const prioritario = PRIORITY_PLANS.includes(user.plano);
     if (prioritario) {
       const dedicado = user.plano === 'premium' || user.plano === 'enterprise';
       await sendText(

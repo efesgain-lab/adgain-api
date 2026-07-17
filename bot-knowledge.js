@@ -85,10 +85,36 @@ REGRAS DE RESPOSTA:
 
 const CHANNEL_RULES = {
   whatsapp:
-    '\n\nCANAL: você atende pelo WhatsApp oficial da AdGain. Para falar com a equipe humana, o cliente digita *humano* (ou escolhe a opção 4 do menu). Digitar *menu* mostra o menu de opções.',
+    '\n\nCANAL: você atende pelo WhatsApp oficial da AdGain. Digitar *menu* mostra o menu de opções.',
   site:
-    '\n\nCANAL: você atende pelo chat do site www.adgain.com.br. Para falar com a equipe humana, informe o WhatsApp oficial da AdGain: wa.me/556596679565 (65 99667-9565), atendimento seg-sex 8h-18h. O visitante já está no site, então em vez de dizer "acesse o site", indique o caminho direto (ex.: "clique em Anunciar no menu").',
+    '\n\nCANAL: você atende pelo chat do site www.adgain.com.br. O visitante já está no site, então em vez de dizer "acesse o site", indique o caminho direto (ex.: "clique em Anunciar no menu").',
 };
+
+// Escadinha de suporte: menu -> Claude -> humano SÓ para plano pago ativo
+// (fila prioritária para Empresarial/Premium)
+function supportPolicy(canal, user) {
+  const pago = user && user.plano && user.plano !== 'gratuito';
+  if (pago) {
+    const prior = PRIORITY_PLANS.includes(user.plano);
+    const como =
+      canal === 'whatsapp'
+        ? 'oriente o cliente a digitar *humano*'
+        : 'informe o WhatsApp da equipe: wa.me/556596679565 (65 99667-9565)';
+    return (
+      `\n\nPOLÍTICA DE SUPORTE PARA ESTE CLIENTE: assinante ${PLAN_NAMES[user.plano] || user.plano}` +
+      `${prior ? ' com FILA PRIORITÁRIA' : ''} — tem direito a atendimento humano (seg-sex, 8h-18h). ` +
+      `SEMPRE tente resolver você primeiro; apenas se não conseguir, ou em caso delicado ` +
+      `(pagamento, problema técnico, cancelamento, dados pessoais), ${como}.`
+    );
+  }
+  return (
+    '\n\nPOLÍTICA DE SUPORTE PARA ESTE USUÁRIO: o atendimento humano é benefício exclusivo ' +
+    'dos planos pagos. NÃO ofereça atendimento humano nem repasse contatos da equipe — ' +
+    'esforce-se ao máximo para resolver aqui mesmo. Se pedirem um atendente, explique com ' +
+    'simpatia que o suporte com a equipe faz parte dos planos pagos e convide a conhecer: ' +
+    'www.adgain.com.br/plans.'
+  );
+}
 
 async function buildSystemPrompt(canal, user) {
   const precos = await getPlanosText();
@@ -99,7 +125,8 @@ async function buildSystemPrompt(canal, user) {
     BOT_CORE +
     (CHANNEL_RULES[canal] || '') +
     `\n\nPREÇOS E PLANOS ATUAIS (fonte oficial, use exatamente estes valores):\n${precos}` +
-    contexto
+    contexto +
+    supportPolicy(canal, user)
   );
 }
 
