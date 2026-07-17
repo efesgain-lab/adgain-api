@@ -462,6 +462,58 @@ module.exports = function registerWhatsAppBot(app) {
     }
   });
 
+  // Perfil comercial do número: foto (assets/whatsapp-profile.png via Resumable
+  // Upload API) + descrição/site/categoria. GET /api/whatsapp/profile?token=...
+  app.get('/api/whatsapp/profile', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const token = process.env.WHATSAPP_TOKEN;
+      const appId = '2907807466219506';
+      const img = fs.readFileSync(path.join(__dirname, 'assets', 'whatsapp-profile.png'));
+
+      // 1) sessão de upload
+      const sess = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${appId}/uploads?file_length=${img.length}&file_type=image/png`,
+        { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+      ).then((r) => r.json());
+      if (!sess.id) return res.status(500).json({ etapa: 'sessao', resposta: sess });
+
+      // 2) envio dos bytes -> handle
+      const up = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${sess.id}`, {
+        method: 'POST',
+        headers: { Authorization: `OAuth ${token}`, file_offset: '0' },
+        body: img,
+      }).then((r) => r.json());
+      if (!up.h) return res.status(500).json({ etapa: 'upload', resposta: up });
+
+      // 3) aplica foto + textos do perfil
+      const prof = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_ID}/whatsapp_business_profile`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            profile_picture_handle: up.h,
+            about: 'Sua terra com o valor certo. 🌱',
+            description:
+              'Marketplace de terras e imóveis rurais com análise técnica por satélite. Atendimento AdGain: planos, créditos, anúncios e análises.',
+            websites: ['https://www.adgain.com.br'],
+            vertical: 'PROF_SERVICES',
+          }),
+        }
+      ).then((r) => r.json());
+      console.log('[wa-bot] perfil atualizado:', JSON.stringify(prof).slice(0, 200));
+      res.json({ foto: 'ok', perfil: prof });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Diagnóstico: últimos statuses de entrega (protegido pelo verify token).
   // GET /api/whatsapp/status?token=...          -> lista últimos statuses
   // GET /api/whatsapp/status?token=...&ping=1   -> dispara um envio de teste antes
