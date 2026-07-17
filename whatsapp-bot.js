@@ -433,6 +433,35 @@ module.exports = function registerWhatsAppBot(app) {
     }
   });
 
+  // Registro do número na plataforma Cloud API (uma vez por número).
+  // GET /api/whatsapp/register?token=...&pin=NNNNNN
+  app.get('/api/whatsapp/register', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    if (!/^\d{6}$/.test(req.query.pin || '')) {
+      return res.status(400).json({ error: 'pin de 6 dígitos obrigatório' });
+    }
+    try {
+      const r = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_ID}/register`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ messaging_product: 'whatsapp', pin: req.query.pin }),
+        }
+      );
+      const d = await r.json().catch(() => ({}));
+      console.log('[wa-bot] register', r.status, JSON.stringify(d).slice(0, 300));
+      res.json({ status: r.status, resposta: d });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Diagnóstico: últimos statuses de entrega (protegido pelo verify token).
   // GET /api/whatsapp/status?token=...          -> lista últimos statuses
   // GET /api/whatsapp/status?token=...&ping=1   -> dispara um envio de teste antes
