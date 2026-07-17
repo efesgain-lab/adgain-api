@@ -87,7 +87,7 @@ const CHANNEL_RULES = {
   whatsapp:
     '\n\nCANAL: você atende pelo WhatsApp oficial da AdGain. Para falar com a equipe humana, o cliente digita *humano* (ou escolhe a opção 4 do menu). Digitar *menu* mostra o menu de opções.',
   site:
-    '\n\nCANAL: você atende pelo chat do site www.adgain.com.br. Para falar com a equipe humana, oriente a usar o botão "Falar com a equipe no WhatsApp" no rodapé do chat (WhatsApp oficial: 65 99667-9565). O visitante já está no site, então em vez de dizer "acesse o site", indique o caminho direto (ex.: "clique em Anunciar no menu").',
+    '\n\nCANAL: você atende pelo chat do site www.adgain.com.br. Para falar com a equipe humana, informe o WhatsApp oficial da AdGain: wa.me/556596679565 (65 99667-9565), atendimento seg-sex 8h-18h. O visitante já está no site, então em vez de dizer "acesse o site", indique o caminho direto (ex.: "clique em Anunciar no menu").',
 };
 
 async function buildSystemPrompt(canal, user) {
@@ -124,6 +124,15 @@ const CANNED = {
     '▫️ Aptidão para pivôs centrais e fontes de água\n' +
     '▫️ Infraestrutura, logística e laudo geológico por IA\n\n' +
     'Tudo pode virar um *relatório completo* para valorizar seu anúncio ou apoiar sua decisão de compra.',
+
+  ganhos:
+    '📈 *Ganhe ao anunciar na AdGain*\n\n' +
+    'Seu anúncio pode gerar renda antes mesmo da venda:\n\n' +
+    '▫️ Compradores usam créditos para desbloquear seções do seu anúncio (análises, relatórios, contato)\n' +
+    '▫️ Parte desses créditos vira *recompensa sua*, automaticamente\n' +
+    '▫️ Quanto mais completo o anúncio (fotos + análise técnica), mais desbloqueios — e mais ganhos\n' +
+    '▫️ Acompanhe tudo na aba *Meus Ganhos* da página de planos e solicite *saque via Pix* quando quiser\n\n' +
+    'Comece em: www.adgain.com.br/plans',
 
   creditos:
     '💳 *Créditos AdGain — como funcionam*\n\n' +
