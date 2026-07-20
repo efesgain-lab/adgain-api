@@ -391,18 +391,30 @@ function getUFsFromBbox(minLng, minLat, maxLng, maxLat) {
  */
 async function fetchWFS(typeName, bbox, timeoutMs = 8000) {
   const url = `https://terrabrasilis.dpi.inpe.br/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=${encodeURIComponent(typeName)}&outputFormat=application/json&bbox=${bbox.join(',')},EPSG:4326&count=500`;
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(tid);
-    if (!r.ok) return { features: [], error: `HTTP ${r.status}` };
-    const j = await r.json();
-    return j;
-  } catch (e) {
-    clearTimeout(tid);
-    return { features: [], error: e.message || 'fetch err' };
+  // INPE/TerraBrasilis retorna 502/503/504 de forma intermitente (gateway).
+  // Re-tenta erros transitórios de servidor com backoff curto. Timeout (abort)
+  // NÃO é re-tentado para não estourar a latência da análise.
+  const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+  const MAX_ATTEMPTS = 3;
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+  let lastErr = 'fetch err';
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
+      clearTimeout(tid);
+      if (r.ok) return await r.json();
+      lastErr = `HTTP ${r.status}`;
+      if (!RETRYABLE.has(r.status) || attempt === MAX_ATTEMPTS) return { features: [], error: lastErr };
+    } catch (e) {
+      clearTimeout(tid);
+      lastErr = e.message || 'fetch err';
+      if (e.name === 'AbortError' || attempt === MAX_ATTEMPTS) return { features: [], error: lastErr };
+    }
+    await new Promise(res => setTimeout(res, 350 * attempt)); // backoff crescente
   }
+  return { features: [], error: lastErr };
 }
 
 /* =========================================================================
