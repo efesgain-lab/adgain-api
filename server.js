@@ -3039,33 +3039,38 @@ app.post('/api/analises', async (req, res) => {
     if (codImoveisCar.length > 0) {
       const placeholders = codImoveisCar.map((_, i) => `$${i + 1}`).join(', ');
 
-      // ── PARALELIZADO: 3 queries CAR (RL + Veg Nativa + Área Consolidada) — todas usam codImoveisCar mas são independentes entre si ──
+      // ── PARALELIZADO: 3 queries CAR (RL + Veg Nativa + Área Consolidada) ──
+      // RECORTADAS pelo perímetro selecionado (união das parcelas). Antes somavam o
+      // num_area DECLARADO do CAR inteiro; com a entrada de CARs parcialmente
+      // sobrepostos (ex.: um CAR de 51 mil ha que transborda a fazenda), o total
+      // passava a incluir RL/vegetação/consolidada de área FORA da seleção.
+      // ST_UnaryUnion(ST_Collect(...)) evita dupla contagem onde CARs se sobrepõem.
+      const temaClipSql = (tabela) => `
+          SELECT ROUND(CAST(
+            COALESCE(ST_Area(ST_Transform(ST_UnaryUnion(ST_Collect(inter)), 32721)) / 10000, 0)
+          AS numeric), 2) as area_ha
+          FROM (
+            SELECT ST_Intersection(
+              CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+              po.g
+            ) AS inter
+            FROM ${tabela} t,
+                 (SELECT ST_UnaryUnion(ST_MakeValid(
+                    ST_SetSRID(ST_GeomFromGeoJSON($${codImoveisCar.length + 1}::jsonb->'geometry'), ${SRID})
+                  )) AS g) po
+            WHERE t.cod_imovel IN (${placeholders})
+              AND t.geom && po.g
+              AND ST_Intersects(
+                CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+                po.g
+              )
+          ) d`;
+      const temaParams = [...codImoveisCar, geojsonStr];
       console.time('[par] car-detail');
       const [reservaLegalResult, vegNativaResult, areaConsolidadaResult] = await Promise.all([
-        safeQuery(`
-          SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
-          FROM (
-            SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
-            FROM ${carReservaTable}
-            WHERE cod_imovel IN (${placeholders})
-          ) d
-        `, codImoveisCar),
-        safeQuery(`
-          SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
-          FROM (
-            SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
-            FROM ${carVegNativaTable}
-            WHERE cod_imovel IN (${placeholders})
-          ) d
-        `, codImoveisCar),
-        pool.query(`
-          SELECT ROUND(CAST(SUM(num_area) AS numeric), 2) as area_ha
-          FROM (
-            SELECT DISTINCT ON (gid) CAST(num_area AS numeric) as num_area
-            FROM ${carAreaConsolidadaTable}
-            WHERE cod_imovel IN (${placeholders})
-          ) d
-        `, codImoveisCar).catch(e => {
+        safeQuery(temaClipSql(carReservaTable), temaParams),
+        safeQuery(temaClipSql(carVegNativaTable), temaParams),
+        pool.query(temaClipSql(carAreaConsolidadaTable), temaParams).catch(e => {
           console.error('[DEBUG] areaConsolidada ERRO:', e.message, '| tabela:', carAreaConsolidadaTable);
           return { rows: [] };
         }),
