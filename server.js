@@ -1143,6 +1143,39 @@ function parseGeoJSONFeature(geojson) {
   }
   return geojson;
 }
+
+/**
+ * SQL que mede um tema do CAR (RL, veg. nativa, área consolidada) RECORTADO pelo
+ * perímetro selecionado, restrito a uma lista de cod_imovel.
+ * - Recorte espacial: sem ele, CAR que transborda a seleção infla o total com
+ *   área de fora da fazenda.
+ * - ST_UnaryUnion(ST_Collect(...)): sem ele, temas de CARs sobrepostos entre si
+ *   seriam contados duas vezes.
+ * Parâmetros: $1..$n = códigos; $n+1 = geojson da seleção.
+ */
+function carTemaClipSql(tabela, nCodigos) {
+  const placeholders = Array.from({ length: nCodigos }, (_, i) => `$${i + 1}`).join(', ');
+  return `
+          SELECT ROUND(CAST(
+            COALESCE(ST_Area(ST_Transform(ST_UnaryUnion(ST_Collect(inter)), 32721)) / 10000, 0)
+          AS numeric), 2) as area_ha
+          FROM (
+            SELECT ST_Intersection(
+              CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+              po.g
+            ) AS inter
+            FROM ${tabela} t,
+                 (SELECT ST_UnaryUnion(ST_MakeValid(
+                    ST_SetSRID(ST_GeomFromGeoJSON($${nCodigos + 1}::jsonb->'geometry'), ${SRID})
+                  )) AS g) po
+            WHERE t.cod_imovel IN (${placeholders})
+              AND t.geom && po.g
+              AND ST_Intersects(
+                CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
+                po.g
+              )
+          ) d`;
+}
 // ============================================================================
 // ENDPOINTS
 // ============================================================================
@@ -3045,26 +3078,7 @@ app.post('/api/analises', async (req, res) => {
       // sobrepostos (ex.: um CAR de 51 mil ha que transborda a fazenda), o total
       // passava a incluir RL/vegetação/consolidada de área FORA da seleção.
       // ST_UnaryUnion(ST_Collect(...)) evita dupla contagem onde CARs se sobrepõem.
-      const temaClipSql = (tabela) => `
-          SELECT ROUND(CAST(
-            COALESCE(ST_Area(ST_Transform(ST_UnaryUnion(ST_Collect(inter)), 32721)) / 10000, 0)
-          AS numeric), 2) as area_ha
-          FROM (
-            SELECT ST_Intersection(
-              CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-              po.g
-            ) AS inter
-            FROM ${tabela} t,
-                 (SELECT ST_UnaryUnion(ST_MakeValid(
-                    ST_SetSRID(ST_GeomFromGeoJSON($${codImoveisCar.length + 1}::jsonb->'geometry'), ${SRID})
-                  )) AS g) po
-            WHERE t.cod_imovel IN (${placeholders})
-              AND t.geom && po.g
-              AND ST_Intersects(
-                CASE WHEN ST_SRID(t.geom) != ${SRID} THEN ST_SetSRID(t.geom, ${SRID}) ELSE t.geom END,
-                po.g
-              )
-          ) d`;
+      const temaClipSql = (tabela) => carTemaClipSql(tabela, codImoveisCar.length);
       const temaParams = [...codImoveisCar, geojsonStr];
       console.time('[par] car-detail');
       const [reservaLegalResult, vegNativaResult, areaConsolidadaResult] = await Promise.all([
@@ -5138,6 +5152,51 @@ app.get('/api/test-car-rl', async (req, res) => {
     }
   }
   res.json(out);
+});
+
+/**
+ * POST /api/car-temas
+ * body: { geojson, codigos: ['MT-...', ...] }
+ * Mede RL, vegetação nativa e área consolidada APENAS dos CARs informados,
+ * recortados pelo perímetro da seleção. Usado quando o usuário confirma um
+ * subconjunto dos CARs sobrepostos no painel: o relatório então soma só os
+ * escolhidos, em vez de todos os encontrados pela análise.
+ */
+app.post('/api/car-temas', async (req, res) => {
+  try {
+    const { geojson, codigos } = req.body || {};
+    if (!geojson || !Array.isArray(codigos) || codigos.length === 0) {
+      return res.status(400).json({ erro: 'Informe geojson e codigos[] (cod_imovel dos CARs)' });
+    }
+    const cods = codigos.map(c => String(c)).filter(Boolean).slice(0, 50);
+    const geojsonStr = JSON.stringify(parseGeoJSONFeature(geojson));
+
+    // UF pelas iniciais do próprio código CAR (MT-51026...) — mais barato que consulta espacial
+    const ufCod = (cods[0] || '').substring(0, 2).toLowerCase();
+    const uf = /^[a-z]{2}$/.test(ufCod) ? ufCod : (await getUFFromGeoJSON(geojsonStr) || '').toLowerCase();
+    if (!uf) return res.status(400).json({ erro: 'UF não identificada' });
+
+    const params = [...cods, geojsonStr];
+    const medir = async (tabela) => {
+      const r = await safeQuery(carTemaClipSql(tabela, cods.length), params);
+      return r.rows[0] ? (parseFloat(r.rows[0].area_ha) || 0) : 0;
+    };
+    const [rl, veg, cons] = await Promise.all([
+      medir(`car.reserva_legal_${uf}`),
+      medir(`car.vegetacao_nativa_${uf}`),
+      medir(`car.area_consolidada_${uf}`),
+    ]);
+    res.json({
+      uf: uf.toUpperCase(),
+      codigos: cods.length,
+      reserva_legal_ha: rl,
+      vegetacao_nativa_ha: veg,
+      area_consolidada_ha: cons,
+    });
+  } catch (e) {
+    console.error('[car-temas]', e.message);
+    res.status(500).json({ erro: e.message });
+  }
 });
 
 app.get('/api/car-geom', async (req, res) => {
