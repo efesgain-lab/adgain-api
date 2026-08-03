@@ -1375,6 +1375,37 @@ async function ensureCcirCache() {
 }
 const CCIR_CACHE_TTL_DAYS = Number(process.env.CCIR_CACHE_TTL_DAYS || 30);
 
+// ─── Toggle global das consultas Serpro (controlado pelo painel admin) ───────
+// A flag mora no Firestore em credit_config/serpro { enabled: boolean }.
+// As rules dão leitura pública a credit_config, então dá para ler pela REST API
+// sem SDK nem credencial; a escrita só é permitida a admin (painel).
+// Cache de 60s em memória para não consultar o Firestore a cada análise.
+// Doc ausente ou Firestore fora do ar = LIGADO (comportamento histórico).
+const SERPRO_FLAG_URL = 'https://firestore.googleapis.com/v1/projects/'
+  + (process.env.FIREBASE_PROJECT_ID || 'adgain-sistemas')
+  + '/databases/(default)/documents/credit_config/serpro';
+let _serproFlag = { enabled: true, exp: 0 };
+async function serproHabilitado() {
+  const now = Date.now();
+  if (now < _serproFlag.exp) return _serproFlag.enabled;
+  let enabled = _serproFlag.enabled;
+  try {
+    const r = await fetch(SERPRO_FLAG_URL, { signal: AbortSignal.timeout(4000) });
+    if (r.ok) {
+      const j = await r.json();
+      enabled = j?.fields?.enabled?.booleanValue !== false;
+    } else if (r.status === 404) {
+      enabled = true; // nunca configurado -> ligado
+    }
+  } catch (e) { console.warn('[Serpro] flag indisponivel, mantendo estado anterior:', e.message); }
+  _serproFlag = { enabled, exp: now + 60000 };
+  return enabled;
+}
+const SERPRO_OFF = {
+  status: 503, ok: false, desativado: true,
+  data: { erro: 'Consultas Serpro/CCIR desativadas pelo administrador' }
+};
+
 // Serviço 1 — dados do CCIR por código do imóvel (traz titulares). Header x-signature obrigatório.
 async function consultarDadosCcirPorCodigo(codigo) {
   const cod = soDigitos(codigo);
@@ -1390,6 +1421,12 @@ async function consultarDadosCcirPorCodigo(codigo) {
         return { status: st, ok: st >= 200 && st < 300, data: hit.rows[0].data, cache: true };
       }
     } catch (e) { console.warn('[CCIR] cache read:', e.message); }
+  }
+  // O gate fica DEPOIS do cache: consulta já paga continua servindo de graça;
+  // só a chamada nova (paga) ao Serpro é bloqueada quando a flag está off.
+  if (!(await serproHabilitado())) {
+    console.log('[CCIR] consulta bloqueada pela flag admin (codigo %s)', cod);
+    return SERPRO_OFF;
   }
   const token = await getSerproToken();
   const url = `${SERPRO_CCIR_BASE}/v1/consultarDadosCcirPorCodigoImovel/${encodeURIComponent(cod)}`;
@@ -1475,6 +1512,10 @@ async function enriquecerCartorioPorCns(reg) {
 
 // Serviço 2 — códigos de imóvel por CPF/CNPJ do titular (retorna array de códigos)
 async function consultarImoveisPorNI(ni) {
+  if (!(await serproHabilitado())) {
+    console.log('[CCIR] consulta por NI bloqueada pela flag admin');
+    return { ...SERPRO_OFF, codigos: [] };
+  }
   const token = await getSerproToken();
   const url = `${SERPRO_CCIR_BASE}/v1/consultarCodigoImovelPorNI/${encodeURIComponent(soDigitos(ni))}`;
   const resp = await fetch(url, {
@@ -1558,6 +1599,7 @@ app.post('/api/validar-proprietario', async (req, res) => {
     if (!codigoImovel) return res.status(400).json({ erro: 'Informe codigoImovel (código SNCR de 13 dígitos)' });
     const ambiente = SERPRO_CCIR_BASE.includes('trial') ? 'trial' : 'producao';
     const r = await consultarDadosCcirPorCodigo(codigoImovel);
+    if (r.desativado) return res.json({ confere: false, desativado: true, titulares: [], motivo: 'Consultas Serpro desativadas temporariamente pelo administrador', codigoImovel, ambiente });
     if (r.status === 404) return res.json({ confere: false, motivo: 'Imóvel não encontrado no CCIR', codigoImovel, ambiente });
     if (!r.ok) return res.status(502).json({ erro: 'Consulta CCIR falhou', status: r.status, detalhe: r.data });
     const titulares = extrairTitulares(r.data);
@@ -1629,6 +1671,7 @@ app.post('/api/registral', async (req, res) => {
     const codigo = soDigitos(req.body && (req.body.codigoImovel || req.body.codigo));
     if (!codigo) return res.status(400).json({ erro: 'Informe codigoImovel (codigo SNCR)' });
     const r = await consultarDadosCcirPorCodigo(codigo);
+    if (r.desativado) return res.json({ encontrado: false, desativado: true, motivo: 'Consultas Serpro desativadas temporariamente pelo administrador', codigoImovel: codigo });
     if (r.status === 404) return res.json({ encontrado: false, motivo: 'Imovel nao encontrado no CCIR', codigoImovel: codigo });
     if (!r.ok) return res.status(502).json({ erro: 'Consulta CCIR falhou', status: r.status });
     const reg = extrairRegistral(r.data);
