@@ -2905,7 +2905,15 @@ app.post('/api/analises', async (req, res) => {
       // Fallback: se buffer -5m esvazia parcelas estreitas, usa parcela original.
       carAreaResult = await safeQuery(`
         WITH parcel_orig AS (
-          SELECT ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID}) AS g
+          -- ST_UnaryUnion DISSOLVE as parcelas selecionadas num unico perimetro externo.
+          -- Sem isso, uma selecao com varias parcelas SIGEF era confrontada com o CAR
+          -- polígono a polígono: como o CAR costuma ser MAIOR que cada parcela isolada,
+          -- a sobra "fora da parcela" estourava qualquer limite e o CAR era descartado,
+          -- mesmo coincidindo com a fazenda inteira. Dissolvido, a comparacao passa a
+          -- ser contra a area total selecionada, que e' o que interessa.
+          SELECT ST_UnaryUnion(ST_MakeValid(
+            ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb->'geometry'), ${SRID})
+          )) AS g
         ),
         parcel_shrunk AS (
           SELECT
