@@ -2296,7 +2296,16 @@ app.post('/api/analises', async (req, res) => {
           // PERF: paraleliza queries de % de sobreposição (antes era loop serial)
           const _pctQueries = _wfsRows.map((_row, _i) => safeQuery(`SELECT ROUND(CAST(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($1::jsonb),${SRID})),ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID})))::geography)/NULLIF(ST_Area(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2::jsonb->'geometry'),${SRID}))::geography),0)*100 AS numeric),2) as pct`, [JSON.stringify(_wfsData.features[_i].geometry), geojsonStr]).catch(() => ({ rows: [{ pct: null }] })));
           const _pctResults = await Promise.all(_pctQueries);
-          _wfsRows.forEach((_row, _i) => { _row.percentual_sobreposicao = _pctResults[_i].rows[0]?.pct ?? null; }); if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
+          // O WFS da FUNAI é consultado por BBOX, então devolve TI apenas VIZINHA
+          // (retângulos se tocam mas os polígonos não). Marcamos essas com
+          // apenas_proximidade para o relatório não afirmar "sobreposição" —
+          // a consulta do banco, acima, já exige ST_Intersects de verdade.
+          _wfsRows.forEach((_row, _i) => {
+            const _p = _pctResults[_i].rows[0]?.pct ?? null;
+            _row.percentual_sobreposicao = _p;
+            _row.apenas_proximidade = !(Number(_p) > 0);
+          });
+          if (_wfsRows.length) { tisResult = { rows: _wfsRows }; }
         }
       } catch (_e) { console.warn('[TI WFS]', _e.message); }
     }
@@ -4511,7 +4520,16 @@ function _summarizeResultadosForIA(r) {
     lines.push(`\n## UCs SOBREPOSTAS\n${r.unidades_conservacao.map(u => `  - ${u.nome} (${u.categoria})`).join('\n')}`);
   }
   if (r?.terras_indigenas?.length) {
-    lines.push(`\n## TERRAS INDÍGENAS\n${r.terras_indigenas.map(t => `  - ${t.terrai_nom || t.nome} (${t.fase_ti || ''})`).join('\n')}`);
+    // Distingue sobreposição real de mera vizinhança: o laudo de IA afirmava
+    // "restrição absoluta" para TI que só passava perto da parcela.
+    const _tiSobrep = r.terras_indigenas.filter(t => Number(t.percentual_sobreposicao) > 0);
+    const _tiPerto = r.terras_indigenas.filter(t => !(Number(t.percentual_sobreposicao) > 0));
+    if (_tiSobrep.length) {
+      lines.push(`\n## TERRAS INDÍGENAS SOBREPOSTAS\n${_tiSobrep.map(t => `  - ${t.terrai_nom || t.nome} (${t.fase_ti || ''}) — ${t.percentual_sobreposicao}% da parcela`).join('\n')}`);
+    }
+    if (_tiPerto.length) {
+      lines.push(`\n## TERRAS INDÍGENAS NA VIZINHANÇA (NÃO incidem sobre a parcela — 0% de sobreposição; NÃO tratar como restrição de uso)\n${_tiPerto.map(t => `  - ${t.terrai_nom || t.nome} (${t.fase_ti || ''})`).join('\n')}`);
+    }
   }
 
   // 12. PROCESSOS MINERÁRIOS (ANM) — dado JÁ coletado; alimenta a análise geológica.
