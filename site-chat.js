@@ -196,8 +196,47 @@ module.exports = function registerSiteChat(app) {
       if (!resposta) return res.status(502).json({ erro: 'sem resposta' });
       res.json({ resposta, plano: user ? PLAN_NAMES[user.plano] || user.plano : null });
     } catch (err) {
-      console.error('[site-chat] erro:', err.message);
+      // status + tipo ajudam a distinguir saldo esgotado (400 invalid_request_error
+      // "credit balance is too low") de chave inválida (401) e de sobrecarga (529).
+      console.error(
+        '[site-chat] erro:',
+        err.status || '-',
+        err.error && err.error.error && err.error.error.type,
+        err.message
+      );
       res.status(500).json({ erro: 'falha no chat' });
+    }
+  });
+
+  // Diagnóstico da chave/saldo da Anthropic. Protegido pelo mesmo token do
+  // webhook do WhatsApp. NUNCA devolve a chave — só o prefixo e o erro da API.
+  app.get('/api/chat/diag', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    const key = process.env.ANTHROPIC_API_KEY || '';
+    const info = {
+      chaveConfigurada: !!key,
+      chavePrefixo: key ? `${key.slice(0, 14)}...${key.slice(-4)}` : null,
+      chaveTamanho: key.length || 0,
+    };
+    const client = getAnthropic();
+    if (!client) return res.json({ ...info, ok: false, motivo: 'ANTHROPIC_API_KEY ausente' });
+    try {
+      const r = await client.messages.create({
+        model: 'claude-haiku-4-5',
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'ping' }],
+      });
+      res.json({ ...info, ok: true, modelo: r.model, uso: r.usage });
+    } catch (err) {
+      res.json({
+        ...info,
+        ok: false,
+        status: err.status || null,
+        tipo: (err.error && err.error.error && err.error.error.type) || null,
+        mensagem: (err.error && err.error.error && err.error.error.message) || err.message,
+      });
     }
   });
 
