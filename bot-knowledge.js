@@ -119,7 +119,7 @@ function supportPolicy(canal, user) {
 }
 
 async function buildSystemPrompt(canal, user) {
-  const precos = await getPlanosText();
+  const [precos, pacotes] = await Promise.all([getPlanosText(), getPacotesText()]);
   const contexto = user
     ? `\n\nCLIENTE ATUAL: ${user.nome || 'sem nome'} — plano ${PLAN_NAMES[user.plano] || user.plano}. Personalize quando fizer sentido.`
     : '\n\nCLIENTE ATUAL: visitante não identificado (não logado/cadastrado).';
@@ -127,6 +127,11 @@ async function buildSystemPrompt(canal, user) {
     BOT_CORE +
     (CHANNEL_RULES[canal] || '') +
     `\n\nPREÇOS E PLANOS ATUAIS (fonte oficial, use exatamente estes valores):\n${precos}` +
+    `\n\n${pacotes}\n` +
+    'Se perguntarem quanto custa UM crédito, responda com a faixa real: o preço por crédito ' +
+    'varia conforme o pacote ou plano (pacotes maiores e planos maiores saem mais barato por ' +
+    'crédito). Cite os valores acima e sugira a opção que melhor atende o volume da pessoa. ' +
+    'Nunca invente valores.' +
     contexto +
     supportPolicy(canal, user)
   );
@@ -173,6 +178,53 @@ const CANNED = {
     'Veja os pacotes em: www.adgain.com.br/plans',
 };
 
+// Pacotes de créditos avulsos (credit_config/pricing.creditPackages — mesma
+// fonte do site). Sem isso o bot não sabia responder "quanto custa um crédito".
+let pacotesCache = { text: null, ts: 0 };
+
+const PACOTES_FALLBACK =
+  'Os pacotes de créditos avulsos ficam em www.adgain.com.br/plans (aba "Comprar Créditos").';
+
+async function getPacotesText() {
+  if (pacotesCache.text && Date.now() - pacotesCache.ts < PRICING_CACHE_TTL_MS) {
+    return pacotesCache.text;
+  }
+  try {
+    const db = getDb();
+    if (db) {
+      const doc = await db.doc('credit_config/pricing').get();
+      const pacotes =
+        doc.exists && Array.isArray(doc.data().creditPackages) ? doc.data().creditPackages : null;
+      if (pacotes && pacotes.length) {
+        const brl = (c) => 'R$ ' + ((c || 0) / 100).toFixed(2).replace('.', ',');
+        const linhas = pacotes
+          .slice()
+          .sort((a, b) => (a.credits || 0) - (b.credits || 0))
+          .map((p) => {
+            const base = Number(p.credits) || 0;
+            const bonus = Number(p.bonus) || 0;
+            const total = base + bonus;
+            const preco = Number(p.price) || 0;
+            // "por crédito" considera o bônus — é o custo real para o cliente
+            const unit = total > 0 ? preco / 100 / total : 0;
+            const bonusTxt = bonus ? ` + ${bonus} bônus = *${total}*` : '';
+            return `▫️ *${base} créditos*${bonusTxt} — ${brl(preco)} (R$ ${unit
+              .toFixed(2)
+              .replace('.', ',')} por crédito)`;
+          });
+        pacotesCache = {
+          text: '💳 *Pacotes de créditos avulsos*:\n\n' + linhas.join('\n'),
+          ts: Date.now(),
+        };
+        return pacotesCache.text;
+      }
+    }
+  } catch (err) {
+    console.error('[bot] pacotes de créditos falharam:', err.message);
+  }
+  return PACOTES_FALLBACK;
+}
+
 // Hierarquia de ganhos por nível de anunciante (percentuais vivos do
 // credit_config/global.revenueShareRules; fallback = padrões do produto)
 let hierarquiaCache = { text: null, ts: 0 };
@@ -215,6 +267,11 @@ async function getHierarquiaText() {
 async function cannedAnswer(id) {
   if (id === 'planos') return getPlanosText();
   if (id === 'niveis') return getHierarquiaText();
+  // Créditos: explicação fixa + tabela viva de pacotes (com preço por crédito)
+  if (id === 'creditos') {
+    const pacotes = await getPacotesText();
+    return `${CANNED.creditos}\n\n${pacotes}\n\nComprar em: www.adgain.com.br/plans`;
+  }
   return CANNED[id] || null;
 }
 
@@ -223,6 +280,7 @@ module.exports = {
   PRIORITY_PLANS,
   PLANOS_FALLBACK,
   getPlanosText,
+  getPacotesText,
   buildSystemPrompt,
   CANNED,
   cannedAnswer,
