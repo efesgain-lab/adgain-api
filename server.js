@@ -5400,6 +5400,9 @@ require('./whatsapp-bot')(app);
 // Chat do site (mesmo cérebro do bot) — rota /api/chat
 require('./site-chat')(app);
 
+// Diagnóstico de cadastros (só contagens agregadas) — rota /api/diag/cadastros
+require('./diag-cadastros')(app);
+
 // Catch-all 404
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
