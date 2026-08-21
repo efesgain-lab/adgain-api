@@ -43,10 +43,25 @@ module.exports = (app) => {
     if (!db) return res.status(503).json({ erro: 'Firestore indisponivel' });
 
     try {
-      const [usersSnap, propsSnap] = await Promise.all([
+      const [usersSnap, propsSnap, intentsSnap] = await Promise.all([
         db.collection('users').get(),
         db.collection('properties').get(),
+        db.collection('intents-to-buy').get(),
       ]);
+
+      // Intencoes de compra: base da futura "busca por compradores"
+      const intents = { total: 0, ativas: 0, querNotificacao: 0, comFiltroReal: 0 };
+      intentsSnap.forEach((doc) => {
+        const i = doc.data() || {};
+        intents.total++;
+        if (i.isActive !== false) intents.ativas++;
+        if (i.receiveNotifications) intents.querNotificacao++;
+        const temUF = i.location && Array.isArray(i.location.states) && i.location.states.length;
+        const temTipo = Array.isArray(i.propertyTypes) && i.propertyTypes.length;
+        const temArea = i.areaRange && (i.areaRange.min > 0 || i.areaRange.max > 0);
+        const temPreco = i.priceRange && (i.priceRange.min > 0 || i.priceRange.max > 0);
+        if (temUF || temTipo || temArea || temPreco) intents.comFiltroReal++;
+      });
 
       // Donos que informaram telefone no anúncio (fonte paralela ao perfil)
       const donosComTelefoneNoAnuncio = new Set();
@@ -60,6 +75,7 @@ module.exports = (app) => {
       });
 
       const r = {
+        intencoesDeCompra: intents,
         totalUsuarios: 0,
         comTelefoneNoPerfil: 0,
         semTelefoneNoPerfil: 0,
