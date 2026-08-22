@@ -291,8 +291,8 @@ module.exports = (app) => {
     const email = String(req.query.email || '').trim().toLowerCase();
     if (!email) return res.status(400).json({ erro: 'email obrigatorio' });
     try {
+      const db = getDb(); // inicializa o app admin antes de usar o Auth
       const rec = await getAuth().getUserByEmail(email);
-      const db = getDb();
       const doc = db ? await db.collection('users').doc(rec.uid).get() : null;
       const u = (doc && doc.exists && doc.data()) || {};
       res.json({
