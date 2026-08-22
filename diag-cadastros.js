@@ -283,5 +283,34 @@ module.exports = (app) => {
     }
   });
 
+  // Ficha de uma conta pelo e-mail (somente leitura) — para investigar cadastros suspeitos
+  app.get('/api/diag/usuario', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ erro: 'email obrigatorio' });
+    try {
+      const rec = await getAuth().getUserByEmail(email);
+      const db = getDb();
+      const doc = db ? await db.collection('users').doc(rec.uid).get() : null;
+      const u = (doc && doc.exists && doc.data()) || {};
+      res.json({
+        uid: rec.uid,
+        provedores: (rec.providerData || []).map((p) => p.providerId),
+        emailVerificado: rec.emailVerified,
+        criadoEm: rec.metadata && rec.metadata.creationTime,
+        ultimoLogin: rec.metadata && rec.metadata.lastSignInTime,
+        temDocFirestore: !!(doc && doc.exists),
+        camposFirestore: Object.keys(u).sort(),
+        displayName: u.displayName || rec.displayName || null,
+        profileType: u.profile || u.profileType || null,
+        termsAccepted: u.termsAccepted || u.acceptedTerms || null,
+      });
+    } catch (err) {
+      res.status(404).json({ erro: err.message });
+    }
+  });
+
   console.log('[diag-cadastros] Rota registrada (/api/diag/cadastros)');
 };
