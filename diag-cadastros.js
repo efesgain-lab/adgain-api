@@ -158,7 +158,37 @@ module.exports = (app) => {
           noAuth.push({ erro: e.code || e.message });
         }
       }
-      r.docsSemEmail = { total: fantasmas.length, amostra: fantasmas.slice(0, 6), noFirebaseAuth: noAuth };
+      // Lista das contas orfas para o dono decidir a limpeza: nome, quando foi
+      // criada e se realmente esta inacessivel (sem provedor no Auth).
+      const orfas = [];
+      for (const uid of semEmailIds) {
+        const docData = usersSnap.docs.find((d) => d.id === uid);
+        const u = docData ? docData.data() : {};
+        let auth = null;
+        try {
+          const rec = await getAuth().getUser(uid);
+          auth = {
+            provedores: (rec.providerData || []).map((p) => p.providerId),
+            temEmail: !!rec.email,
+            criadoEm: rec.metadata && rec.metadata.creationTime,
+            ultimoLogin: rec.metadata && rec.metadata.lastSignInTime,
+          };
+        } catch (e) {
+          auth = { erro: e.code || e.message };
+        }
+        orfas.push({
+          uid,
+          nome: u.displayName || '(sem nome)',
+          temDocumento: !!(u.cpf || u.cnpj),
+          temTelefone: !!(u.profile && (u.profile.phone || (u.profile.phones && u.profile.phones.primary))),
+          // seguro apagar = sem provedor de login E sem dados de negocio
+          inacessivel: !!auth && Array.isArray(auth.provedores) && auth.provedores.length === 0,
+          auth,
+        });
+      }
+      // ordena: as inacessiveis (candidatas a limpeza) primeiro
+      orfas.sort((a, b) => Number(b.inacessivel) - Number(a.inacessivel));
+      r.docsSemEmail = { total: fantasmas.length, lista: orfas, noFirebaseAuth: noAuth };
 
       const pct = (n) => (r.totalUsuarios ? Math.round((n / r.totalUsuarios) * 100) : 0);
       res.json({
