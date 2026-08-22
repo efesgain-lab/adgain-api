@@ -323,5 +323,36 @@ module.exports = (app) => {
     }
   });
 
+  // Remove docs soltos de `users` cuja conta NAO existe mais no Auth e que
+  // nunca tiveram documento/telefone/plano (rastros de scanners / contas-sonda).
+  app.post('/api/diag/limpar-rastros', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    if (!req.body || req.body.confirmar !== 'APAGAR_RASTROS') {
+      return res.status(400).json({ erro: 'Envie {"confirmar":"APAGAR_RASTROS"}' });
+    }
+    const db = getDb();
+    const removidos = [];
+    const snap = await db.collection('users').get();
+    for (const d of snap.docs) {
+      const u = d.data() || {};
+      if (u.cpf || u.cnpj || u.subscriptionPlan || temTelefoneNoPerfil(u)) continue;
+      try {
+        await getAuth().getUser(d.id);
+        continue; // conta viva
+      } catch (e) {
+        if (e.code !== 'auth/user-not-found') continue;
+      }
+      await db.collection('deleted-orphan-accounts').doc(d.id).set({
+        uid: d.id, email: u.email || null, removidoEm: new Date().toISOString(),
+        motivo: 'doc sem conta no Auth (rastro de conta-sonda)', dadosOriginais: u,
+      });
+      await d.ref.delete();
+      removidos.push({ uid: d.id, email: u.email || null });
+    }
+    res.json({ ok: true, removidos });
+  });
+
   console.log('[diag-cadastros] Rota registrada (/api/diag/cadastros)');
 };
