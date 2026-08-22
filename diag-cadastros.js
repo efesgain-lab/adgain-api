@@ -117,6 +117,25 @@ module.exports = (app) => {
         }
       });
 
+      // Docs "fantasma": tem nome mas nao tem email — indicam doc criado por
+      // merge (updateProfile nunca grava email) em vez do fluxo de cadastro.
+      const fantasmas = [];
+      usersSnap.forEach((doc) => {
+        const u = doc.data() || {};
+        if (u.email) return;
+        fantasmas.push({
+          // sem expor o nome: so o padrao de campos presentes
+          campos: Object.keys(u).sort().join(','),
+          temUid: !!u.uid,
+          temCreatedAt: !!u.createdAt,
+          temRole: !!u.role,
+          temDocumento: !!(u.cpf || u.cnpj),
+          temProfile: !!u.profile,
+          criadoEm: u.createdAt && u.createdAt.toDate ? u.createdAt.toDate().toISOString() : null,
+        });
+      });
+      r.docsSemEmail = { total: fantasmas.length, amostra: fantasmas.slice(0, 6) };
+
       const pct = (n) => (r.totalUsuarios ? Math.round((n / r.totalUsuarios) * 100) : 0);
       res.json({
         ...r,
