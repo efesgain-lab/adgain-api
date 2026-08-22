@@ -9,6 +9,7 @@
 // ============================================================
 
 const { getDb } = require('./firebase');
+const { getAuth } = require('firebase-admin/auth');
 
 /** Telefone do cadastro do usuário, em qualquer um dos formatos já usados. */
 function temTelefoneNoPerfil(u) {
@@ -134,7 +135,30 @@ module.exports = (app) => {
           criadoEm: u.createdAt && u.createdAt.toDate ? u.createdAt.toDate().toISOString() : null,
         });
       });
-      r.docsSemEmail = { total: fantasmas.length, amostra: fantasmas.slice(0, 6) };
+      // Cruza com o Firebase Auth: a conta tem e-mail LA? Se sim, o e-mail
+      // existe e o problema esta so na gravacao do documento.
+      const semEmailIds = [];
+      usersSnap.forEach((doc) => {
+        const u = doc.data() || {};
+        if (!u.email) semEmailIds.push(doc.id);
+      });
+      const noAuth = [];
+      for (const uid of semEmailIds.slice(0, 8)) {
+        try {
+          const rec = await getAuth().getUser(uid);
+          noAuth.push({
+            temEmailNoAuth: !!rec.email,
+            dominioEmail: rec.email ? rec.email.split('@')[1] : null,
+            provedores: (rec.providerData || []).map((p) => p.providerId),
+            temNomeNoAuth: !!rec.displayName,
+            criadoAuth: rec.metadata && rec.metadata.creationTime,
+            ultimoLogin: rec.metadata && rec.metadata.lastSignInTime,
+          });
+        } catch (e) {
+          noAuth.push({ erro: e.code || e.message });
+        }
+      }
+      r.docsSemEmail = { total: fantasmas.length, amostra: fantasmas.slice(0, 6), noFirebaseAuth: noAuth };
 
       const pct = (n) => (r.totalUsuarios ? Math.round((n / r.totalUsuarios) * 100) : 0);
       res.json({
