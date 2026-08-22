@@ -205,5 +205,83 @@ module.exports = (app) => {
     }
   });
 
+  // ============================================================
+  // Limpeza das contas ORFAS — POST /api/diag/limpar-orfas?token=...
+  //
+  // Remove contas criadas pelo bug do unlink: existem no Auth mas SEM nenhum
+  // provedor de login, entao ninguem consegue acessa-las. Exige confirmacao
+  // explicita e REVERIFICA cada conta na hora — nunca confia numa lista
+  // pre-calculada. Guarda o que foi removido em `deleted-orphan-accounts`.
+  // ============================================================
+  app.post('/api/diag/limpar-orfas', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    if (!req.body || req.body.confirmar !== 'APAGAR_ORFAS') {
+      return res.status(400).json({
+        erro: 'Confirmacao ausente. Envie {"confirmar":"APAGAR_ORFAS"} no corpo.',
+      });
+    }
+    const db = getDb();
+    if (!db) return res.status(503).json({ erro: 'Firestore indisponivel' });
+
+    const removidas = [];
+    const preservadas = [];
+    try {
+      const usersSnap = await db.collection('users').get();
+
+      for (const docSnap of usersSnap.docs) {
+        const u = docSnap.data() || {};
+        if (u.email) continue;                       // tem e-mail: nao e orfa
+        if (u.cpf || u.cnpj) { preservadas.push({ motivo: 'tem documento' }); continue; }
+
+        // TRAVA: reverifica no Auth agora. So apaga quem nao tem provedor algum.
+        let rec = null;
+        try {
+          rec = await getAuth().getUser(docSnap.id);
+        } catch (e) {
+          // conta ja nao existe no Auth — remove so o documento residual
+          await docSnap.ref.delete();
+          removidas.push({ uid: docSnap.id, nome: u.displayName || null, apenasDoc: true });
+          continue;
+        }
+        const provedores = (rec.providerData || []).map((p) => p.providerId);
+        if (provedores.length > 0 || rec.email) {
+          preservadas.push({ nome: rec.displayName || null, provedores, motivo: 'acessivel' });
+          continue;
+        }
+
+        // Registro do que sera removido (auditoria) antes de apagar
+        await db.collection('deleted-orphan-accounts').doc(docSnap.id).set({
+          uid: docSnap.id,
+          displayName: u.displayName || null,
+          criadoEm: (rec.metadata && rec.metadata.creationTime) || null,
+          removidoEm: new Date().toISOString(),
+          motivo: 'conta sem provedor de login (bug do unlink no Google)',
+          dadosOriginais: u,
+        });
+
+        await getAuth().deleteUser(docSnap.id);
+        await docSnap.ref.delete();
+        removidas.push({
+          uid: docSnap.id,
+          nome: u.displayName || null,
+          criadaEm: (rec.metadata && rec.metadata.creationTime) || null,
+        });
+      }
+
+      res.json({
+        ok: true,
+        removidas: removidas.length,
+        preservadas: preservadas.length,
+        detalheRemovidas: removidas,
+        detalhePreservadas: preservadas,
+      });
+    } catch (err) {
+      console.error('[limpar-orfas] erro:', err.message);
+      res.status(500).json({ erro: err.message, removidasAntesDoErro: removidas.length });
+    }
+  });
+
   console.log('[diag-cadastros] Rota registrada (/api/diag/cadastros)');
 };
