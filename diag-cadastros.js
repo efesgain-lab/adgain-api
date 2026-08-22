@@ -308,7 +308,18 @@ module.exports = (app) => {
         termsAccepted: u.termsAccepted || u.acceptedTerms || null,
       });
     } catch (err) {
-      res.status(404).json({ erro: err.message });
+      // Nao existe no Auth: procura documento solto no Firestore com esse e-mail
+      try {
+        const db = getDb();
+        const snap = await db.collection('users').where('email', '==', email).get();
+        if (snap.empty) return res.status(404).json({ erro: err.message, firestore: 'nenhum doc' });
+        return res.json({
+          noAuth: false,
+          docsFirestore: snap.docs.map((d) => ({ id: d.id, dados: d.data() })),
+        });
+      } catch (e2) {
+        res.status(404).json({ erro: err.message, erroFirestore: e2.message });
+      }
     }
   });
 
