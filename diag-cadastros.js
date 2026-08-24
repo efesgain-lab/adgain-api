@@ -354,5 +354,44 @@ module.exports = (app) => {
     res.json({ ok: true, removidos });
   });
 
+  // Copia o nome do Firebase Auth para users/{uid} quando o documento esta sem
+  // nome. O gatilho onUserCreated cria o doc antes de o displayName existir, e
+  // o painel admin passava a mostrar "Sem nome" para gente que se identificou.
+  app.post('/api/diag/backfill-nomes', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    const soListar = req.body && req.body.confirmar !== 'APLICAR';
+    const db = getDb();
+    const corrigidos = [];
+    const semNomeEmLugarNenhum = [];
+
+    const snap = await db.collection('users').get();
+    for (const d of snap.docs) {
+      const u = d.data() || {};
+      const nomeDoc = String(u.displayName || u.name || '').trim();
+      if (nomeDoc) continue;
+
+      let rec = null;
+      try { rec = await getAuth().getUser(d.id); } catch (e) { continue; }
+      const nomeAuth = String((rec && rec.displayName) || '').trim();
+      if (!nomeAuth) {
+        semNomeEmLugarNenhum.push({ uid: d.id, email: u.email || rec.email || null });
+        continue;
+      }
+      if (!soListar) {
+        await d.ref.set({ displayName: nomeAuth, updatedAt: new Date() }, { merge: true });
+      }
+      corrigidos.push({ email: u.email || rec.email || null, nome: nomeAuth });
+    }
+
+    res.json({
+      modo: soListar ? 'simulacao' : 'aplicado',
+      corrigidos: corrigidos.length,
+      detalhe: corrigidos,
+      semNomeEmLugarNenhum,
+    });
+  });
+
   console.log('[diag-cadastros] Rota registrada (/api/diag/cadastros)');
 };
