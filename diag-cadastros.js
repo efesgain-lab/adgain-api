@@ -393,5 +393,31 @@ module.exports = (app) => {
     });
   });
 
+  // Extrato de creditos de um usuario (por e-mail) — leitura, nada de escrita.
+  app.get('/api/diag/extrato', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ erro: 'email obrigatorio' });
+    const db = getDb();
+
+    let uid = null;
+    try { uid = (await getAuth().getUserByEmail(email)).uid; }
+    catch (e) { return res.status(404).json({ erro: 'conta nao encontrada' }); }
+
+    const [txSnap, credSnap] = await Promise.all([
+      db.collection('credit_transactions').where('userId', '==', uid).get(),
+      db.collection('user_credits').doc(uid).get(),
+    ]);
+    const movimentos = txSnap.docs.map((d) => {
+      const t = d.data();
+      const quando = t.createdAt && t.createdAt.toDate ? t.createdAt.toDate().toISOString() : null;
+      return { quando, tipo: t.type, quantidade: t.amount, descricao: t.description || null,
+               saldoApos: t.balanceAfter ?? null };
+    }).sort((a, b) => String(a.quando).localeCompare(String(b.quando)));
+    res.json({ email, saldoAtual: credSnap.exists ? credSnap.data().balance : null, movimentos });
+  });
+
   console.log('[diag-cadastros] Rota registrada (/api/diag/cadastros)');
 };
