@@ -1621,6 +1621,46 @@ async function consultarQsaBrasilApi(cnpj) {
  * body: { ni: CPF|CNPJ, codigoImovel: código SNCR (13) }
  * Confere se o NI do anunciante é titular do imóvel no CCIR (Serpro), via consultarDadosCcirPorCodigoImovel.
  */
+// [DIAG] Imóveis rurais por CPF/CNPJ do titular (Serpro CCIR, serviço 2)
+// GET /api/diag/imoveis-por-ni?token=<WHATSAPP_VERIFY_TOKEN>&ni=<cpf/cnpj>
+app.get('/api/diag/imoveis-por-ni', async (req, res) => {
+  if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+    return res.sendStatus(403);
+  }
+  try {
+    const ni = soDigitos(req.query.ni);
+    if (ni.length !== 11 && ni.length !== 14) return res.status(400).json({ erro: 'Informe ni (CPF 11 ou CNPJ 14 dígitos)' });
+    const r = await consultarImoveisPorNI(ni);
+    if (r.desativado) return res.json({ desativado: true, motivo: 'Consultas Serpro desativadas pelo admin' });
+    if (!r.ok && r.status !== 404) return res.status(502).json({ erro: 'Consulta falhou', status: r.status, detalhe: r.data });
+    const imoveis = [];
+    for (const cod of (r.codigos || []).slice(0, 15)) {
+      const det = await consultarDadosCcirPorCodigo(cod);
+      if (det.ok) {
+        const t = extrairTitulares(det.data);
+        const d = det.data || {};
+        const im = d.imovel || d;
+        imoveis.push({
+          codigoImovel: cod,
+          denominacao: im.denominacao || d.denominacao || null,
+          municipio: im.municipio || d.municipio || null,
+          uf: im.uf || d.uf || null,
+          areaTotal: im.areaTotal ?? d.areaTotal ?? null,
+          numeroCcir: im.numeroCcir ?? d.numeroCcir ?? null,
+          situacaoCcir: im.situacaoCcir ?? d.situacaoCcir ?? null,
+          titulares: t.map(x => ({ nome: x.nome, cpfCnpj: x.cpfCnpj, percentual: x.percentual, condicao: x.condicao })),
+        });
+      } else {
+        imoveis.push({ codigoImovel: cod, erro: 'detalhe indisponível', status: det.status });
+      }
+    }
+    res.json({ ni: mascararNI(ni), totalCodigos: (r.codigos || []).length, imoveis });
+  } catch (e) {
+    console.error('[imoveis-por-ni]', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 app.post('/api/validar-proprietario', async (req, res) => {
   try {
     const ni = soDigitos(req.body && req.body.ni);
