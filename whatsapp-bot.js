@@ -479,6 +479,9 @@ module.exports = function registerWhatsAppBot(app) {
               de: msg.from,
               tipo: msg.type,
               texto: (msg.text && msg.text.body) || (msg.button && msg.button.text) || null,
+              // Mensagens "unsupported" (ex.: código de verificação do Instagram)
+              // não trazem texto — guardamos o objeto cru para inspeção.
+              bruto: msg.type !== 'text' ? JSON.stringify(msg).slice(0, 900) : undefined,
             });
             if (lastInbound.length > 30) lastInbound.shift();
             handleIncomingMessage(msg, value.contacts).catch((err) =>
