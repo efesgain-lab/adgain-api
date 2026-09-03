@@ -5443,6 +5443,9 @@ require('./site-chat')(app);
 // Diagnóstico de cadastros (só contagens agregadas) — rota /api/diag/cadastros
 require('./diag-cadastros')(app);
 
+// Campanha por template (marketing pago via Cloud API) — rotas /api/whatsapp/campanha/*
+require('./campanha-wa')(app);
+
 // Catch-all 404
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
