@@ -21,6 +21,7 @@ const { getDb } = require('./firebase');
 
 const GRAPH_VERSION = 'v23.0';
 const TEMPLATE_NAME = 'apresentacao_adgain_corretores';
+const TEMPLATE_IMG = 'apresentacao_adgain_corretores_img';
 const TEMPLATE_LANG = 'pt_BR';
 
 // Texto do template (sem variáveis => aprovação mais simples).
@@ -101,6 +102,91 @@ module.exports = function registerCampanha(app) {
     }
   });
 
+  // ---------- versão com criativo no cabeçalho ----------
+  // POST body: { imagemBase64, mime } — sobe a imagem (resumable upload p/ o
+  // exemplo do template + /media p/ os envios), cria o template *_img e grava
+  // a configuração em wa_campanha_config/global.
+  app.post('/api/whatsapp/campanha/header', async (req, res) => {
+    if (!auth(req, res)) return;
+    const db = getDb();
+    if (!db) return res.status(500).json({ error: 'Firestore indisponível' });
+    const { imagemBase64, mime } = req.body || {};
+    if (!imagemBase64) return res.status(400).json({ error: 'imagemBase64 obrigatório' });
+    const buf = Buffer.from(imagemBase64, 'base64');
+    const tipo = mime || 'image/jpeg';
+    const token = process.env.WHATSAPP_TOKEN;
+    const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
+    try {
+      // 1) app dono do token (necessário para o resumable upload)
+      const appInfo = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/app?access_token=${encodeURIComponent(token)}`
+      ).then((r) => r.json());
+      if (!appInfo.id) return res.status(502).json({ etapa: 'app', resposta: appInfo });
+
+      // 2) resumable upload -> header_handle (exemplo exigido pela análise)
+      const sessao = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${appInfo.id}/uploads?file_length=${buf.length}&file_type=${encodeURIComponent(tipo)}&access_token=${encodeURIComponent(token)}`,
+        { method: 'POST' }
+      ).then((r) => r.json());
+      if (!sessao.id) return res.status(502).json({ etapa: 'upload-sessao', resposta: sessao });
+      const upload = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${sessao.id}`, {
+        method: 'POST',
+        headers: { Authorization: `OAuth ${token}`, file_offset: '0' },
+        body: buf,
+      }).then((r) => r.json());
+      if (!upload.h) return res.status(502).json({ etapa: 'upload', resposta: upload });
+
+      // 3) /media do número -> id reutilizado em cada envio
+      const fd = new FormData();
+      fd.append('messaging_product', 'whatsapp');
+      fd.append('file', new Blob([buf], { type: tipo }), 'criativo.jpg');
+      const media = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_ID}/media`,
+        { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd }
+      ).then((r) => r.json());
+      if (!media.id) return res.status(502).json({ etapa: 'media', resposta: media });
+
+      // 4) template com imagem no cabeçalho
+      const tpl = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/message_templates`,
+        {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            name: TEMPLATE_IMG,
+            language: TEMPLATE_LANG,
+            category: 'MARKETING',
+            components: [
+              { type: 'HEADER', format: 'IMAGE', example: { header_handle: [upload.h] } },
+              { type: 'BODY', text: TEMPLATE_BODY },
+              {
+                type: 'BUTTONS',
+                buttons: [
+                  { type: 'QUICK_REPLY', text: 'Quero conhecer' },
+                  { type: 'QUICK_REPLY', text: 'Não tenho interesse' },
+                  {
+                    type: 'URL',
+                    text: 'Cadastro grátis',
+                    url: 'https://www.adgain.com.br/auth/register',
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      ).then((r) => r.json());
+
+      await db.collection('wa_campanha_config').doc('global').set(
+        { template: TEMPLATE_IMG, headerMediaId: media.id, atualizadoEm: new Date() },
+        { merge: true }
+      );
+      console.log('[campanha] template com imagem criado:', JSON.stringify(tpl).slice(0, 200));
+      res.json({ ok: true, mediaId: media.id, template: tpl });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ---------- disparo ----------
   app.post('/api/whatsapp/campanha/enviar', async (req, res) => {
     if (!auth(req, res)) return;
@@ -115,6 +201,13 @@ module.exports = function registerCampanha(app) {
 
     const col = db.collection('wa_campanha');
     const resultados = { enviados: [], pulados: [], erros: [] };
+
+    // configuração: template com imagem (se criado/aprovado) ou o texto puro
+    const cfgSnap = await db.collection('wa_campanha_config').doc('global').get();
+    const cfg = cfgSnap.exists ? cfgSnap.data() : {};
+    const nomeTemplate = body.template || cfg.template || TEMPLATE_NAME;
+    const headerMediaId = nomeTemplate === TEMPLATE_IMG ? cfg.headerMediaId : null;
+    resultados.template = nomeTemplate;
 
     for (const bruto of numeros) {
       if (resultados.enviados.length >= limite) break;
@@ -147,7 +240,20 @@ module.exports = function registerCampanha(app) {
               messaging_product: 'whatsapp',
               to: tel,
               type: 'template',
-              template: { name: TEMPLATE_NAME, language: { code: TEMPLATE_LANG } },
+              template: {
+                name: nomeTemplate,
+                language: { code: TEMPLATE_LANG },
+                ...(headerMediaId
+                  ? {
+                      components: [
+                        {
+                          type: 'header',
+                          parameters: [{ type: 'image', image: { id: headerMediaId } }],
+                        },
+                      ],
+                    }
+                  : {}),
+              },
             }),
           }
         );
@@ -155,14 +261,14 @@ module.exports = function registerCampanha(app) {
         if (r.ok && d.messages && d.messages[0]) {
           await ref.set({
             status: 'enviado',
-            template: TEMPLATE_NAME,
+            template: nomeTemplate,
             messageId: d.messages[0].id,
             em: new Date(),
           });
           resultados.enviados.push({ tel, id: d.messages[0].id });
         } else {
           const erro = (d.error && (d.error.message + (d.error.error_data ? ' | ' + JSON.stringify(d.error.error_data) : ''))) || ('HTTP ' + r.status);
-          await ref.set({ status: 'erro', template: TEMPLATE_NAME, erro, em: new Date() }, { merge: true });
+          await ref.set({ status: 'erro', template: nomeTemplate, erro, em: new Date() }, { merge: true });
           resultados.erros.push({ tel, erro });
           // erro de pagamento/limite derruba o lote inteiro — para na hora
           if (d.error && [131042, 131048, 131056, 80007].includes(d.error.code)) {
