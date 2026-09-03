@@ -419,6 +419,39 @@ async function handleIncomingMessage(msg, contacts) {
   const user = await lookupUser(from);
   const ctx = { profileName, user };
 
+  // Botões de TEMPLATE (campanha): chegam como type 'button', não 'interactive'
+  if (msg.type === 'button') {
+    const rotulo = ((msg.button && (msg.button.text || msg.button.payload)) || '')
+      .toLowerCase();
+    if (rotulo.includes('tenho interesse') && rotulo.includes('n')) {
+      // "Não tenho interesse" -> registra opt-out e encerra com educação
+      try {
+        const db = require('./firebase').getDb();
+        if (db) await db.collection('wa_optout').doc(from).set({ em: new Date(), origem: 'campanha' });
+      } catch (e) { console.warn('[wa-bot] opt-out não registrado:', e.message); }
+      return sendText(
+        from,
+        'Tudo bem, obrigado por avisar! 👍 Você não vai receber mais novidades da AdGain por aqui.\n\n' +
+        'Se mudar de ideia, é só mandar um *oi*. Boa semana!'
+      );
+    }
+    if (rotulo.includes('quero conhecer')) {
+      const nome = profileName ? `, ${String(profileName).split(' ')[0]}` : '';
+      return sendText(
+        from,
+        `Que bom${nome}! 🌱 A AdGain coloca sua fazenda no mapa de quem procura terra — ` +
+        'com análise técnica georreferenciada do imóvel.\n\n' +
+        '✅ Anunciar é *grátis*: sem mensalidade, sem comissão e sem exclusividade\n' +
+        '💰 Você *ganha créditos* quando um interessado desbloqueia informações do seu anúncio\n' +
+        '🗺️ E se você *procura* terra, cadastre sua busca — os vendedores encontram você\n\n' +
+        'Cadastro em 2 minutos: https://www.adgain.com.br/auth/register\n\n' +
+        'Qualquer dúvida, é só perguntar por aqui — eu respondo na hora! 😊'
+      );
+    }
+    // botão desconhecido: mostra o menu padrão
+    return sendMenu(from, user);
+  }
+
   // Resposta de menu interativo (list)
   if (msg.type === 'interactive') {
     const replyId =

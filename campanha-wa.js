@@ -216,10 +216,13 @@ module.exports = function registerCampanha(app) {
         continue;
       }
 
-      // já recebeu? pula (nunca reenvia)
+      // já recebeu ou pediu para sair? pula (nunca reenvia)
       const ref = col.doc(tel);
-      const snap = await ref.get();
-      if (snap.exists && snap.data().status === 'enviado') {
+      const [snap, optout] = await Promise.all([
+        ref.get(),
+        db.collection('wa_optout').doc(tel).get(),
+      ]);
+      if (optout.exists || (snap.exists && snap.data().status === 'enviado')) {
         resultados.pulados.push(tel);
         continue;
       }
