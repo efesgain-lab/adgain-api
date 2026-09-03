@@ -21,20 +21,19 @@ const { getDb } = require('./firebase');
 
 const GRAPH_VERSION = 'v23.0';
 const TEMPLATE_NAME = 'apresentacao_adgain_corretores';
-const TEMPLATE_IMG = 'apresentacao_adgain_corretores_img';
+const TEMPLATE_IMG = 'apresentacao_adgain_curto';
 const TEMPLATE_LANG = 'pt_BR';
 
 // Texto do template (sem variáveis => aprovação mais simples).
-// Regras seguidas: identifica a empresa, diz de onde veio o contato,
-// oferece saída clara (opt-out) e não usa CAIXA ALTA exagerada.
+// Curto de propósito: com imagem no cabeçalho o WhatsApp esconde textos
+// longos atrás do "Ler mais" — este cabe inteiro na primeira dobra.
+// O opt-out fica por conta do botão "Não tenho interesse".
 const TEMPLATE_BODY =
   'Olá! Aqui é o Nilton, da AdGain — plataforma de compra e venda de terras rurais. ' +
-  'Vi seu contato em um grupo de negócios de fazendas no WhatsApp.\n\n' +
-  'Na AdGain, anunciar fazenda é de graça: sem mensalidade, sem comissão e sem ' +
-  'exclusividade. E você ainda ganha créditos quando um interessado desbloqueia ' +
-  'informações do seu anúncio.\n\n' +
-  'Quer saber como funciona? É só responder esta mensagem — nosso assistente ' +
-  'responde na hora. Se preferir não receber mais novidades, toque em "Não tenho interesse".';
+  'Vi seu contato em um grupo de fazendas.\n\n' +
+  'Anunciar na AdGain é de graça: sem mensalidade, sem comissão e sem exclusividade. ' +
+  'E você ganha créditos quando um interessado desbloqueia seu anúncio.\n\n' +
+  'Quer saber mais? É só responder — nosso assistente atende na hora.';
 
 function auth(req, res) {
   if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
