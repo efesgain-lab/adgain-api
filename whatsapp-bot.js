@@ -262,6 +262,36 @@ async function askClaude(from, texto, user) {
 // ------------------------------------------------------------
 // Envio via Graph API
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Registro persistente das conversas (monitor /api/whatsapp/conversas)
+// wa_conversas/{waId} { nome, ultimaMsg, em } + subcoleção msgs {dir,texto,em}
+// Fire-and-forget: nunca atrasa nem derruba o atendimento.
+// ------------------------------------------------------------
+function logConversa(waId, dir, texto, nome) {
+  try {
+    const db = require('./firebase').getDb();
+    if (!db || !waId || !texto) return;
+    const agora = new Date();
+    const ref = db.collection('wa_conversas').doc(String(waId));
+    ref.set(
+      { ultimaMsg: String(texto).slice(0, 200), em: agora, ...(nome ? { nome } : {}) },
+      { merge: true }
+    ).catch(() => {});
+    ref.collection('msgs').add({ dir, texto: String(texto).slice(0, 4000), em: agora }).catch(() => {});
+  } catch (_) {}
+}
+
+function textoDoPayload(payload) {
+  if (!payload) return '';
+  if (payload.text && payload.text.body) return payload.text.body;
+  if (payload.template && payload.template.name) return `[template: ${payload.template.name}]`;
+  if (payload.interactive) {
+    const i = payload.interactive;
+    return (i.body && i.body.text) || '[menu interativo]';
+  }
+  return `[${payload.type || 'mensagem'}]`;
+}
+
 async function waSend(payload) {
   const phoneId = process.env.WHATSAPP_PHONE_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -269,6 +299,7 @@ async function waSend(payload) {
     console.warn('[wa-bot] WHATSAPP_PHONE_ID/WHATSAPP_TOKEN ausentes — envio ignorado');
     return null;
   }
+  logConversa(payload.to, 'bot', textoDoPayload(payload));
   const resp = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${phoneId}/messages`, {
     method: 'POST',
     headers: {
@@ -398,6 +429,16 @@ function matchShortcut(text) {
 async function handleIncomingMessage(msg, contacts) {
   const from = msg.from; // wa_id do cliente (E.164 sem '+')
   const profileName = contacts && contacts[0] && contacts[0].profile && contacts[0].profile.name;
+
+  // registra a mensagem recebida no monitor de conversas
+  const recebido =
+    msg.type === 'text' ? (msg.text && msg.text.body) :
+    msg.type === 'button' ? `[botão: ${(msg.button && (msg.button.text || msg.button.payload)) || '?'}]` :
+    msg.type === 'interactive' ? `[opção: ${
+      (msg.interactive && ((msg.interactive.list_reply && msg.interactive.list_reply.title) ||
+        (msg.interactive.button_reply && msg.interactive.button_reply.title))) || '?'}]` :
+    `[${msg.type}]`;
+  logConversa(from, 'cliente', recebido, profileName);
 
   // Mensagem de um humano do suporte: primeiro entrega alertas represados
   // (a janela de 24h acabou de abrir), depois segue o fluxo normal
@@ -682,6 +723,56 @@ module.exports = function registerWhatsAppBot(app) {
       return res.sendStatus(403);
     }
     res.json({ mensagens: lastInbound.slice().reverse() });
+  });
+
+  // Monitor de conversas do robô (HTML, protegido pelo verify token).
+  // GET /api/whatsapp/conversas?token=...  -> lista as conversas mais recentes
+  app.get('/api/whatsapp/conversas', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    try {
+      const db = require('./firebase').getDb();
+      if (!db) return res.status(500).send('Firestore indisponível');
+      const convs = await db.collection('wa_conversas').orderBy('em', 'desc').limit(40).get();
+      const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const fmtTel = (t) => t.length >= 12 ? `(${t.slice(2, 4)}) ${t.slice(4, -4)}-${t.slice(-4)}` : t;
+      const fmtHora = (d) => d && d.toDate ? d.toDate().toLocaleString('pt-BR', { timeZone: 'America/Cuiaba', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+      let corpo = '';
+      for (const c of convs.docs) {
+        const dados = c.data();
+        const msgs = await c.ref.collection('msgs').orderBy('em', 'desc').limit(15).get();
+        const linhas = msgs.docs.reverse().map((m) => {
+          const x = m.data();
+          const doBot = x.dir === 'bot';
+          return `<div class="msg ${doBot ? 'bot' : 'cli'}"><span>${esc(x.texto)}</span><i>${fmtHora(x.em)}</i></div>`;
+        }).join('');
+        corpo += `<details><summary><b>${esc(dados.nome || 'Sem nome')}</b> · ${fmtTel(c.id)}` +
+          `<span class="ult">${esc(dados.ultimaMsg)}</span><em>${fmtHora(dados.em)}</em></summary>` +
+          `<div class="thread">${linhas}</div></details>`;
+      }
+      res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="60">
+<title>Conversas do robô AdGain</title><style>
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6f1;color:#2b2a27;margin:0;padding:16px;}
+h1{font-size:19px;color:#215c25;margin:0 0 4px}.sub{color:#8a9184;font-size:13px;margin-bottom:14px}
+details{background:#fff;border:1px solid #dfe5d8;border-radius:10px;margin-bottom:8px;overflow:hidden}
+summary{padding:10px 14px;cursor:pointer;display:flex;gap:10px;align-items:center;flex-wrap:wrap;list-style:none}
+summary::-webkit-details-marker{display:none}
+.ult{color:#8a9184;font-size:12px;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+summary em{color:#b3b8ad;font-size:11px;font-style:normal}
+.thread{padding:8px 14px 12px;border-top:1px solid #eef1ea;display:flex;flex-direction:column;gap:6px}
+.msg{max-width:85%;padding:7px 10px;border-radius:10px;font-size:13px;line-height:1.45;white-space:pre-wrap}
+.msg.cli{background:#eef3e8;align-self:flex-start}
+.msg.bot{background:#dcf3d0;align-self:flex-end}
+.msg i{display:block;font-size:10px;color:#8a9184;font-style:normal;margin-top:3px;text-align:right}
+</style></head><body>
+<h1>🤖 Conversas do robô AdGain (65 9667-9565)</h1>
+<div class="sub">Clique numa conversa para abrir · atualiza sozinha a cada 60s · ${convs.size} conversas recentes</div>
+${corpo || '<p>Nenhuma conversa registrada ainda.</p>'}</body></html>`);
+    } catch (err) {
+      res.status(500).send('Erro: ' + String(err.message).replace(/</g, '&lt;'));
+    }
   });
 
   app.get('/api/whatsapp/status', async (req, res) => {
