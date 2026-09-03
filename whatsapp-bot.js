@@ -439,11 +439,12 @@ async function handleIncomingMessage(msg, contacts) {
       const nome = profileName ? `, ${String(profileName).split(' ')[0]}` : '';
       return sendText(
         from,
-        `Que bom${nome}! 🌱 A AdGain coloca sua fazenda no mapa de quem procura terra — ` +
-        'com análise técnica georreferenciada do imóvel.\n\n' +
-        '✅ Anunciar é *grátis*: sem mensalidade, sem comissão e sem exclusividade\n' +
-        '💰 Você *ganha créditos* quando um interessado desbloqueia informações do seu anúncio\n' +
-        '🗺️ E se você *procura* terra, cadastre sua busca — os vendedores encontram você\n\n' +
+        `Que bom${nome}! 🌱 Vou direto ao ponto:\n\n` +
+        '✅ Anunciar na AdGain é *DE GRAÇA* — sem mensalidade, sem comissão, sem exclusividade\n' +
+        '💰 E o melhor: seu anúncio *GERA DINHEIRO* — quando um interessado desbloqueia ' +
+        'informações dele, você ganha créditos que pode *sacar via Pix*\n\n' +
+        'Ou seja: em vez de pagar para anunciar, você pode *receber* pelo anúncio — ' +
+        'antes mesmo de vender a terra.\n\n' +
         'Cadastro em 2 minutos: https://www.adgain.com.br/auth/register\n\n' +
         'Qualquer dúvida, é só perguntar por aqui — eu respondo na hora! 😊'
       );
