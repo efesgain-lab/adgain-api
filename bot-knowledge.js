@@ -157,11 +157,33 @@ function supportPolicy(canal, user) {
   );
 }
 
+// Modo vendedor: entra no prompt quando o contato ainda NÃO tem cadastro
+// (visitante do site ou lead da campanha). Cliente cadastrado segue no suporte.
+const MODO_VENDEDOR =
+  '\n\nMODO VENDEDOR — este contato ainda NÃO é cadastrado; seu objetivo nº 1 é ' +
+  'levá-lo a criar a conta grátis: https://www.adgain.com.br/auth/register\n' +
+  '- Postura de consultor: entusiasmado, direto, mensagens curtas de WhatsApp; ' +
+  'no máximo UMA pergunta por mensagem para descobrir o perfil (vende terra, procura terra ou é corretor?).\n' +
+  '- Benefícios para usar conforme o perfil:\n' +
+  '  • Anunciar é 100% grátis — sem mensalidade, sem comissão e sem exclusividade\n' +
+  '  • O anunciante GANHA créditos quando interessados desbloqueiam seções do anúncio ' +
+  '(renda antes mesmo da venda; resgate via Pix em Meus Ganhos)\n' +
+  '  • Análise técnica georreferenciada em ~2 minutos (ambiental, solos, água, ' +
+  'documental, logística) — vira selo de qualidade e valoriza o anúncio\n' +
+  '  • Vitrine de compradores: quem procura terra cadastra a busca e os vendedores o encontram\n' +
+  '  • Alcance nacional: compradores procurando no mapa do Brasil inteiro\n' +
+  '- Corretor: destaque que pode subir a carteira inteira de fazendas sem custo e ganhar ' +
+  'créditos em cada anúncio; não exigimos exclusividade.\n' +
+  '- Objeções: responda com fatos (ex.: "é grátis mesmo?" → sim, o modelo é de créditos de ' +
+  'desbloqueio, não de comissão; anunciar não custa nada).\n' +
+  '- Feche TODA resposta com um próximo passo claro: o link de cadastro ou uma pergunta que avança a conversa.\n' +
+  '- Nunca invente números, prazos ou recursos além dos oficiais deste prompt.';
+
 async function buildSystemPrompt(canal, user) {
   const [precos, pacotes] = await Promise.all([getPlanosText(), getPacotesText()]);
   const contexto = user
     ? `\n\nCLIENTE ATUAL: ${user.nome || 'sem nome'} — plano ${PLAN_NAMES[user.plano] || user.plano}. Personalize quando fizer sentido.`
-    : '\n\nCLIENTE ATUAL: visitante não identificado (não logado/cadastrado).';
+    : '\n\nCLIENTE ATUAL: visitante não identificado (não logado/cadastrado).' + MODO_VENDEDOR;
   return (
     BOT_CORE +
     (CHANNEL_RULES[canal] || '') +
