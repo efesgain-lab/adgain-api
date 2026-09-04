@@ -725,6 +725,33 @@ module.exports = function registerWhatsAppBot(app) {
     res.json({ mensagens: lastInbound.slice().reverse() });
   });
 
+  // Envio manual de texto pelo robô (retomada de conversa dentro da janela
+  // de 24h). POST body: { para: "55...", texto: "..." }. Devolve a resposta
+  // crua da Meta — erro 131047 = janela de 24h expirada (precisa de template).
+  app.post('/api/whatsapp/enviar-texto', async (req, res) => {
+    if (!req.query.token || req.query.token !== process.env.WHATSAPP_VERIFY_TOKEN) {
+      return res.sendStatus(403);
+    }
+    const { para, texto } = req.body || {};
+    if (!para || !texto) return res.status(400).json({ error: 'para e texto obrigatórios' });
+    try {
+      const db = require('./firebase').getDb();
+      if (db) {
+        const optout = await db.collection('wa_optout').doc(String(para).replace(/\D/g, '')).get();
+        if (optout.exists) return res.json({ pulado: 'opt-out' });
+      }
+      const r = await waSend({
+        messaging_product: 'whatsapp',
+        to: String(para).replace(/\D/g, ''),
+        type: 'text',
+        text: { body: String(texto), preview_url: true },
+      });
+      res.json({ resposta: r });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Monitor de conversas do robô (HTML, protegido pelo verify token).
   // GET /api/whatsapp/conversas?token=...  -> lista as conversas mais recentes
   app.get('/api/whatsapp/conversas', async (req, res) => {
