@@ -42,7 +42,7 @@ function getAnthropic() {
 // ------------------------------------------------------------
 const KB = {
   saudacao:
-    'Olá! 🌱 Você fala com o assistente da *AdGain* — sua terra com o valor certo.\n\n' +
+    'Olá! 🌱 Aqui é da *AdGain* — sua terra com o valor certo.\n\n' +
     'Escolha uma opção no menu abaixo, ou escreva sua pergunta.',
 
   planos:
@@ -327,7 +327,7 @@ function sendMenu(to, user) {
     const primeiroNome = (user.nome || '').split(' ')[0];
     const plano = PLAN_NAMES[user.plano] || 'Gratuito';
     saudacao =
-      `Olá${primeiroNome ? `, *${primeiroNome}*` : ''}! 🌱 Você fala com o assistente da *AdGain*.\n\n` +
+      `Olá${primeiroNome ? `, *${primeiroNome}*` : ''}! 🌱 Aqui é da *AdGain*!\n\n` +
       `Vi aqui que você é cliente do plano *${plano}*. ` +
       'Escolha uma opção no menu abaixo, ou escreva sua pergunta.';
   }
