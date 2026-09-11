@@ -186,6 +186,95 @@ module.exports = function registerCampanha(app) {
     }
   });
 
+  // ---------- template de retomada (reabre conversa fora da janela de 24h) ----------
+  // GET  ?do=1 cria o template; sem do, lista o status dele.
+  // POST /api/whatsapp/campanha/retomada  body {numeros:[...]}  -> envia (pula opt-out)
+  app.get('/api/whatsapp/campanha/retomada-template', async (req, res) => {
+    if (!auth(req, res)) return;
+    const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
+    try {
+      if (req.query.do) {
+        const r = await fetch(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/message_templates`,
+          {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({
+              name: 'retomada_adgain',
+              language: TEMPLATE_LANG,
+              category: 'MARKETING',
+              components: [
+                {
+                  type: 'BODY',
+                  text:
+                    'Boa tarde! 🌱 Aqui é da AdGain. Passando para saber em que podemos te ajudar — ' +
+                    'anunciar sua propriedade, entender a análise técnica ou os créditos que o anúncio gera.\n\n' +
+                    'É só responder esta mensagem que a gente continua daqui.',
+                },
+                {
+                  type: 'BUTTONS',
+                  buttons: [
+                    { type: 'QUICK_REPLY', text: 'Quero anunciar' },
+                    { type: 'QUICK_REPLY', text: 'Tenho uma dúvida' },
+                    { type: 'QUICK_REPLY', text: 'Não tenho interesse' },
+                  ],
+                },
+              ],
+            }),
+          }
+        );
+        const d = await r.json().catch(() => ({}));
+        return res.status(r.ok ? 200 : 502).json({ criado: r.ok, resposta: d });
+      }
+      const r = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/message_templates?fields=name,status&limit=50`,
+        { headers: headers() }
+      );
+      const d = await r.json().catch(() => ({}));
+      const t = (d.data || []).find((x) => x.name === 'retomada_adgain');
+      res.json(t || { status: 'INEXISTENTE' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/whatsapp/campanha/retomada', async (req, res) => {
+    if (!auth(req, res)) return;
+    const db = getDb();
+    if (!db) return res.status(500).json({ error: 'Firestore indisponível' });
+    const numeros = Array.isArray(req.body && req.body.numeros) ? req.body.numeros : [];
+    if (!numeros.length) return res.status(400).json({ error: 'numeros obrigatório' });
+    const resultados = { enviados: [], pulados: [], erros: [] };
+    for (const bruto of numeros) {
+      const tel = String(bruto).replace(/\D/g, '');
+      if (!tel) continue;
+      const optout = await db.collection('wa_optout').doc(tel).get();
+      if (optout.exists) { resultados.pulados.push(tel); continue; }
+      try {
+        const r = await fetch(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_ID}/messages`,
+          {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({
+              messaging_product: 'whatsapp',
+              to: tel,
+              type: 'template',
+              template: { name: 'retomada_adgain', language: { code: TEMPLATE_LANG } },
+            }),
+          }
+        );
+        const d = await r.json().catch(() => ({}));
+        if (d.messages && d.messages[0]) resultados.enviados.push(tel);
+        else resultados.erros.push({ tel, resposta: JSON.stringify(d).slice(0, 150) });
+      } catch (err) {
+        resultados.erros.push({ tel, resposta: err.message });
+      }
+      await sleep(1100);
+    }
+    res.json(resultados);
+  });
+
   // ---------- disparo ----------
   app.post('/api/whatsapp/campanha/enviar', async (req, res) => {
     if (!auth(req, res)) return;
