@@ -109,8 +109,10 @@ module.exports = function registerCampanha(app) {
     if (!auth(req, res)) return;
     const db = getDb();
     if (!db) return res.status(500).json({ error: 'Firestore indisponível' });
-    const { imagemBase64, mime } = req.body || {};
+    const { imagemBase64, mime, nome, corpo } = req.body || {};
     if (!imagemBase64) return res.status(400).json({ error: 'imagemBase64 obrigatório' });
+    const nomeTemplate = String(nome || TEMPLATE_IMG).replace(/[^a-z0-9_]/g, '');
+    const corpoTemplate = String(corpo || TEMPLATE_BODY);
     const buf = Buffer.from(imagemBase64, 'base64');
     const tipo = mime || 'image/jpeg';
     const token = process.env.WHATSAPP_TOKEN;
@@ -152,12 +154,12 @@ module.exports = function registerCampanha(app) {
           method: 'POST',
           headers: headers(),
           body: JSON.stringify({
-            name: TEMPLATE_IMG,
+            name: nomeTemplate,
             language: TEMPLATE_LANG,
             category: 'MARKETING',
             components: [
               { type: 'HEADER', format: 'IMAGE', example: { header_handle: [upload.h] } },
-              { type: 'BODY', text: TEMPLATE_BODY },
+              { type: 'BODY', text: corpoTemplate },
               {
                 type: 'BUTTONS',
                 buttons: [
@@ -176,7 +178,7 @@ module.exports = function registerCampanha(app) {
       ).then((r) => r.json());
 
       await db.collection('wa_campanha_config').doc('global').set(
-        { template: TEMPLATE_IMG, headerMediaId: media.id, atualizadoEm: new Date() },
+        { template: nomeTemplate, headerMediaId: media.id, atualizadoEm: new Date() },
         { merge: true }
       );
       console.log('[campanha] template com imagem criado:', JSON.stringify(tpl).slice(0, 200));
@@ -294,7 +296,7 @@ module.exports = function registerCampanha(app) {
     const cfgSnap = await db.collection('wa_campanha_config').doc('global').get();
     const cfg = cfgSnap.exists ? cfgSnap.data() : {};
     const nomeTemplate = body.template || cfg.template || TEMPLATE_NAME;
-    const headerMediaId = nomeTemplate === TEMPLATE_IMG ? cfg.headerMediaId : null;
+    const headerMediaId = (nomeTemplate === cfg.template || nomeTemplate === TEMPLATE_IMG) ? (cfg.headerMediaId || null) : null;
     resultados.template = nomeTemplate;
 
     for (const bruto of numeros) {
