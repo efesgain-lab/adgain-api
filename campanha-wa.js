@@ -316,13 +316,11 @@ module.exports = function registerCampanha(app) {
     if (!auth(req, res)) return;
     const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
     const CORPO =
-      'Olá! Aqui é da AdGain 🌱 plataforma de compra e venda de terras rurais.\n\n' +
-      '📢 Anunciar é 100% GRÁTIS — sem mensalidade, sem comissão, sem exclusividade.\n\n' +
-      '💰 Você GANHA com o anúncio: créditos que pode sacar em dinheiro via Pix quando ' +
-      'interessados desbloqueiam as informações dele.\n\n' +
-      '🎯 E nossa vitrine mostra quem está COMPRANDO — se você tem imóvel na região de uma ' +
-      'busca, o contato do comprador sai de graça.\n\n' +
-      'Responda esta mensagem que a gente te mostra como funciona.';
+      'Olá! Aqui é da AdGain 🌱\n\n' +
+      '📢 Anunciar terras é 100% GRÁTIS\n' +
+      '💰 E você GANHA: créditos sacáveis via Pix enquanto a propriedade não vende\n' +
+      '🎯 Na vitrine, veja quem está COMPRANDO na sua região\n\n' +
+      'Responda que a gente te mostra 👇';
     try {
       if (req.query.do) {
         const r = await fetch(
@@ -331,7 +329,7 @@ module.exports = function registerCampanha(app) {
             method: 'POST',
             headers: headers(),
             body: JSON.stringify({
-              name: 'gratis_ganha_texto',
+              name: 'gratis_ganha_zap',
               language: TEMPLATE_LANG,
               category: 'MARKETING',
               components: [
@@ -356,7 +354,7 @@ module.exports = function registerCampanha(app) {
         { headers: headers() }
       );
       const d = await r.json().catch(() => ({}));
-      const t = (d.data || []).find((x) => x.name === 'gratis_ganha_texto');
+      const t = (d.data || []).find((x) => x.name === 'gratis_ganha_zap');
       res.json(t || { status: 'INEXISTENTE' });
     } catch (err) {
       res.status(500).json({ error: err.message });
