@@ -109,8 +109,8 @@ module.exports = function registerCampanha(app) {
     if (!auth(req, res)) return;
     const db = getDb();
     if (!db) return res.status(500).json({ error: 'Firestore indisponível' });
-    const { imagemBase64, mime, nome, corpo } = req.body || {};
-    if (!imagemBase64) return res.status(400).json({ error: 'imagemBase64 obrigatório' });
+    const { imagemBase64, mime, nome, corpo, semImagem } = req.body || {};
+    if (!imagemBase64 && !semImagem) return res.status(400).json({ error: 'imagemBase64 obrigatório (ou semImagem: true)' });
     const nomeTemplate = String(nome || TEMPLATE_IMG).replace(/[^a-z0-9_]/g, '');
     const corpoTemplate = String(corpo || TEMPLATE_BODY);
     const buf = Buffer.from(imagemBase64, 'base64');
@@ -118,6 +118,36 @@ module.exports = function registerCampanha(app) {
     const token = process.env.WHATSAPP_TOKEN;
     const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
     try {
+      if (semImagem) {
+        const tplTxt = await fetch(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/message_templates`,
+          {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({
+              name: nomeTemplate,
+              language: TEMPLATE_LANG,
+              category: 'MARKETING',
+              components: [
+                { type: 'BODY', text: corpoTemplate },
+                {
+                  type: 'BUTTONS',
+                  buttons: [
+                    { type: 'QUICK_REPLY', text: 'Quero conhecer' },
+                    { type: 'QUICK_REPLY', text: 'Não tenho interesse' },
+                    { type: 'URL', text: 'Cadastro grátis', url: 'https://www.adgain.com.br/auth/register' },
+                  ],
+                },
+              ],
+            }),
+          }
+        ).then((r) => r.json());
+        await db.collection('wa_campanha_config').doc('global').set(
+          { template: nomeTemplate, headerMediaId: null, atualizadoEm: new Date() },
+          { merge: true }
+        );
+        return res.json({ ok: true, semImagem: true, template: tplTxt });
+      }
       // 1) app dono do token (necessário para o resumable upload)
       const appInfo = await fetch(
         `https://graph.facebook.com/${GRAPH_VERSION}/app?access_token=${encodeURIComponent(token)}`
