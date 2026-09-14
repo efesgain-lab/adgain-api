@@ -309,6 +309,60 @@ module.exports = function registerCampanha(app) {
     res.json(resultados);
   });
 
+  // ---------- template só-texto da campanha Chãozão (fixo no código) ----------
+  // GET ?do=1 cria; sem do, mostra o status. Mesmo padrão do retomada-template
+  // (o POST /header com corpo custom travava neste ambiente).
+  app.get('/api/whatsapp/campanha/texto-template', async (req, res) => {
+    if (!auth(req, res)) return;
+    const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
+    const CORPO =
+      'Olá! Aqui é da AdGain 🌱 plataforma de compra e venda de terras rurais.\n\n' +
+      '📢 Anunciar é 100% GRÁTIS — sem mensalidade, sem comissão, sem exclusividade.\n\n' +
+      '💰 Você GANHA com o anúncio: créditos que pode sacar em dinheiro via Pix quando ' +
+      'interessados desbloqueiam as informações dele.\n\n' +
+      '🎯 E nossa vitrine mostra quem está COMPRANDO — se você tem imóvel na região de uma ' +
+      'busca, o contato do comprador sai de graça.\n\n' +
+      'Responda esta mensagem que a gente te mostra como funciona.';
+    try {
+      if (req.query.do) {
+        const r = await fetch(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/message_templates`,
+          {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({
+              name: 'gratis_ganha_texto',
+              language: TEMPLATE_LANG,
+              category: 'MARKETING',
+              components: [
+                { type: 'BODY', text: CORPO },
+                {
+                  type: 'BUTTONS',
+                  buttons: [
+                    { type: 'QUICK_REPLY', text: 'Quero conhecer' },
+                    { type: 'QUICK_REPLY', text: 'Não tenho interesse' },
+                    { type: 'URL', text: 'Cadastro grátis', url: 'https://www.adgain.com.br/auth/register' },
+                  ],
+                },
+              ],
+            }),
+          }
+        );
+        const d = await r.json().catch(() => ({}));
+        return res.status(r.ok ? 200 : 502).json({ criado: r.ok, resposta: d });
+      }
+      const r = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/message_templates?fields=name,status&limit=50`,
+        { headers: headers() }
+      );
+      const d = await r.json().catch(() => ({}));
+      const t = (d.data || []).find((x) => x.name === 'gratis_ganha_texto');
+      res.json(t || { status: 'INEXISTENTE' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ---------- disparo ----------
   app.post('/api/whatsapp/campanha/enviar', async (req, res) => {
     if (!auth(req, res)) return;
