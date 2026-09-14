@@ -482,10 +482,12 @@ async function handleIncomingMessage(msg, contacts) {
         from,
         `Que bom${nome}! 🌱 Vou direto ao ponto:\n\n` +
         '✅ Anunciar na AdGain é *DE GRAÇA* — sem mensalidade, sem comissão, sem exclusividade\n' +
-        '💰 E o melhor: seu anúncio *GERA DINHEIRO* — quando um interessado desbloqueia ' +
-        'informações dele, você ganha créditos que pode *sacar via Pix*\n\n' +
-        'Ou seja: em vez de pagar para anunciar, você pode *receber* pelo anúncio — ' +
-        'antes mesmo de vender a terra.\n\n' +
+        '💰 Seu anúncio *GERA DINHEIRO* — quando um interessado desbloqueia informações ' +
+        'dele, você ganha créditos que pode *sacar via Pix*\n' +
+        '🎯 E na *vitrine de compradores* você vê quem está PROCURANDO terra — se você tem ' +
+        'imóvel na região de uma busca, o contato do comprador sai *de graça*\n\n' +
+        'E se você também procura terra: cadastre sua *Intenção de Compra* no site e deixe ' +
+        'vendedores e corretores te encontrarem (anônimo até você ser desbloqueado).\n\n' +
         'Cadastro em 2 minutos: https://www.adgain.com.br/auth/register\n\n' +
         'Qualquer dúvida, é só perguntar por aqui — eu respondo na hora! 😊'
       );
