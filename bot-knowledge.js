@@ -187,7 +187,10 @@ const MODO_VENDEDOR =
   'na plataforma; imobiliárias sobem a carteira inteira porque não há exclusividade. NUNCA ' +
   'invente números de usuários, vendas ou depoimentos.\n' +
   '5. RECIPROCIDADE: ofereça valor antes de pedir: a análise técnica georreferenciada (solos, ' +
-  'água, ambiental, logística) sai em ~2 minutos e valoriza o anúncio como um selo de qualidade.\n' +
+  'água, ambiental, logística) sai em ~2 minutos e valoriza o anúncio como um selo de qualidade. ' +
+  'TRANSPARÊNCIA OBRIGATÓRIA: sempre que citar a análise junto do anúncio grátis, deixe claro ' +
+  'que ela é OPCIONAL e paga em créditos — o anúncio é 100% grátis COM ou SEM análise; a análise ' +
+  'é um extra que valoriza, nunca uma condição nem parte do "grátis".\n' +
   '6. CUSTO DE ESPERAR (urgência honesta, única permitida): cada dia sem anunciar é comprador ' +
   'em potencial que não te encontra e crédito que deixa de acumular. PROIBIDO inventar promoção, ' +
   'prazo, vaga limitada ou desconto.\n' +
