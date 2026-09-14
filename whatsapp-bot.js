@@ -483,7 +483,8 @@ async function handleIncomingMessage(msg, contacts) {
         `Que bom${nome}! 🌱 Vou direto ao ponto:\n\n` +
         '✅ Anunciar na AdGain é *DE GRAÇA* — sem mensalidade, sem comissão, sem exclusividade\n' +
         '💰 Seu anúncio *GERA DINHEIRO* — quando um interessado desbloqueia informações ' +
-        'dele, você ganha créditos que pode *sacar via Pix*\n' +
+        'dele, você ganha créditos que pode *sacar via Pix*. Ou seja: *enquanto a ' +
+        'propriedade não vende, você já está ganhando com ela* 🤑\n' +
         '🎯 E na *vitrine de compradores* você vê quem está PROCURANDO terra — se você tem ' +
         'imóvel na região de uma busca, o contato do comprador sai *de graça*\n\n' +
         'E se você também procura terra: cadastre sua *Intenção de Compra* no site e deixe ' +
