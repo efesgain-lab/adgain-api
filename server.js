@@ -5463,6 +5463,15 @@ ensureRodoviasTable().catch(console.error);
 loadSridCache().catch(console.error);
 
 // Start server
+// Rede de segurança: um erro fatal fora dos handlers derrubava o processo
+// inteiro (cliente via 502 do Render, sem pista). Loga e mantém o serviço.
+process.on('unhandledRejection', (err) => {
+  console.error('[FATAL unhandledRejection]', err && err.stack || err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL uncaughtException]', err && err.stack || err);
+});
+
 app.listen(port, () => {
   console.log(`AdGain API server running on port ${port}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);

@@ -119,6 +119,7 @@ module.exports = function registerCampanha(app) {
     const waba = process.env.WHATSAPP_WABA_ID || '1011685214925033';
     try {
       if (semImagem) {
+        console.log('[campanha/header] semImagem: criando', nomeTemplate, corpoTemplate.length, 'chars');
         const tplTxt = await fetch(
           `https://graph.facebook.com/${GRAPH_VERSION}/${waba}/message_templates`,
           {
@@ -146,6 +147,7 @@ module.exports = function registerCampanha(app) {
           { template: nomeTemplate, headerMediaId: null, atualizadoEm: new Date() },
           { merge: true }
         );
+        console.log('[campanha/header] semImagem resposta Meta:', JSON.stringify(tplTxt).slice(0, 200));
         return res.json({ ok: true, semImagem: true, template: tplTxt });
       }
       // 1) app dono do token (necessário para o resumable upload)
