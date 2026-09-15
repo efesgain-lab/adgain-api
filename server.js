@@ -5445,6 +5445,7 @@ require('./diag-cadastros')(app);
 
 // Campanha por template (marketing pago via Cloud API) — rotas /api/whatsapp/campanha/*
 require('./campanha-wa')(app);
+require('./import-xml')(app);
 
 // Catch-all 404
 app.use((req, res) => {
