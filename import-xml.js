@@ -135,7 +135,79 @@ function mapListing(listing, ownerUid, feedUrl) {
   };
 }
 
+// ============================================================
+// Proxy do feed XML para o app (o navegador não consegue buscar a
+// URL do CRM direto por CORS). NÃO grava nada: só baixa e devolve o
+// XML; a importação acontece no cliente com o login do corretor —
+// por isso funciona igual em homologação e produção.
+//
+// GET /api/import/proxy-feed?t=<PROXY_FEED_TOKEN>&url=<feed>
+// ============================================================
+
+// Token PÚBLICO (vai no app) — serve só para separar este endpoint dos
+// endpoints sensíveis; nunca reutilizar o WHATSAPP_VERIFY_TOKEN aqui.
+const PROXY_FEED_TOKEN = 'adgain-feed-proxy-2026';
+
+// Rate limit simples por IP (protege contra abuso do proxy aberto)
+const proxyHits = new Map(); // ip -> { n, desde }
+function proxyRateOk(ip) {
+  const agora = Date.now();
+  const reg = proxyHits.get(ip) || { n: 0, desde: agora };
+  if (agora - reg.desde > 60 * 60 * 1000) { reg.n = 0; reg.desde = agora; }
+  reg.n++;
+  proxyHits.set(ip, reg);
+  if (proxyHits.size > 5000) proxyHits.clear(); // nunca crescer sem limite
+  return reg.n <= 60; // 60 buscas/hora por IP
+}
+
+function urlDeFeedValida(u) {
+  let parsed;
+  try { parsed = new URL(u); } catch { return false; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase();
+  // Anti-SSRF básico: nada de IPs literais, localhost ou hosts internos
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(':')) return false;
+  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || !host.includes('.')) return false;
+  return true;
+}
+
 module.exports = function registerImportXml(app) {
+  app.get('/api/import/proxy-feed', async (req, res) => {
+    if (req.query.t !== PROXY_FEED_TOKEN) return res.sendStatus(403);
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '?';
+    if (!proxyRateOk(ip)) return res.status(429).json({ error: 'Muitas buscas — tente em alguns minutos.' });
+
+    const url = String(req.query.url || '');
+    if (!urlDeFeedValida(url)) {
+      return res.status(400).json({ error: 'URL de feed inválida.' });
+    }
+
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      const r = await fetch(url, {
+        signal: ctrl.signal,
+        redirect: 'follow',
+        headers: { 'user-agent': 'AdGain-FeedImporter/1.0', accept: 'application/xml, text/xml, */*' },
+      });
+      clearTimeout(timer);
+      if (!r.ok) return res.status(502).json({ error: `O CRM respondeu ${r.status} ao buscar o feed.` });
+
+      const texto = await r.text();
+      if (texto.length > MAX_FEED_BYTES) {
+        return res.status(413).json({ error: 'Feed acima de 20MB.' });
+      }
+      const inicio = texto.trimStart().slice(0, 200).toLowerCase();
+      if (!inicio.startsWith('<')) {
+        return res.status(422).json({ error: 'A URL não devolveu um XML (confira se é o link do feed do CRM).' });
+      }
+      res.type('text/xml').send(texto);
+    } catch (e) {
+      const msg = e?.name === 'AbortError' ? 'Tempo esgotado ao buscar o feed (25s).' : 'Não foi possível baixar o feed.';
+      res.status(504).json({ error: msg });
+    }
+  });
+
   app.post('/api/import/xml', async (req, res) => {
     if (!auth(req, res)) return;
     const db = getDb();
