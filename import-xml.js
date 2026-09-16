@@ -252,9 +252,21 @@ module.exports = function registerImportXml(app) {
     if (!listings.length) return res.status(400).json({ error: 'nenhum <Listing> encontrado no feed' });
 
     const teto = Math.min(Number(maxItens) || 500, 500);
-    const resultado = { criados: 0, atualizados: 0, pulados: 0, erros: [] };
+    const resultado = { criados: 0, atualizados: 0, pulados: 0, urbanosIgnorados: 0, erros: [] };
+
+    // FILTRO RURAL: feeds de CRM misturam urbanos e rurais (ex.: ImobiBrasil).
+    // Só importamos os rurais; tipo declarado sem cara de rural fica de fora.
+    const normalizar = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const ehRuralListing = (listing) => {
+      const d = listing?.Details || listing || {};
+      const tipoTxt = normalizar(d.PropertyType);
+      if (!tipoTxt) return true; // sem tipo declarado: mantém (feeds rurais simples)
+      const texto = tipoTxt + ' ' + normalizar(d.Title);
+      return /(rural|fazend|sit[ie]|chac|haras|rancho|agricol|farm|gleba)/.test(texto);
+    };
 
     for (const listing of listings.slice(0, teto)) {
+      if (!ehRuralListing(listing)) { resultado.urbanosIgnorados++; continue; }
       try {
         const { docId, doc } = mapListing(listing, String(ownerUid), feedUrl ? String(feedUrl) : null);
         const ref = db.collection('properties').doc(docId);
