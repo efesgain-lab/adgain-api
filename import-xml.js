@@ -34,6 +34,20 @@ function auth(req, res) {
 
 const arr = (x) => (Array.isArray(x) ? x : x === undefined || x === null ? [] : [x]);
 const s = (x) => (x === undefined || x === null ? '' : String(x).trim());
+
+/**
+ * Limpa texto vindo de feed: decodifica entidades HTML (&lt;br&gt; etc.,
+ * inclusive duplamente escapadas), converte <br>/<p> em quebras de linha
+ * reais e remove as demais tags. O ImobiBrasil manda a descrição assim.
+ */
+function limparTextoFeed(t) {
+  let x = String(t || '');
+  for (let i = 0; i < 3 && x.includes('&amp;'); i++) x = x.replace(/&amp;/g, '&');
+  x = x.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ');
+  x = x.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]+>/g, ' ');
+  return x.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim();
+}
 const num = (x) => {
   if (typeof x === 'number') return x;
   const n = parseFloat(String(x || '').replace(/[^0-9,.-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.'));
@@ -102,12 +116,12 @@ function mapListing(listing, ownerUid, feedUrl) {
     doc: {
       ownerId: ownerUid,
       title: titulo,
-      description: s(d.Description),
+      description: limparTextoFeed(s(d.Description)),
       type: tipo(d),
       price: preco,
       totalArea: ha,
       totalAreaUnit: 'ha',
-      identification: { name: titulo, title: titulo, description: s(d.Description), totalAreaInHectares: ha },
+      identification: { name: titulo, title: titulo, description: limparTextoFeed(s(d.Description)), totalAreaInHectares: ha },
       location: {
         address: s(loc.Address),
         city: cidade,
@@ -176,7 +190,7 @@ function mapImovelCarga(I, ownerUid, feedUrl) {
   const listingId = s(I.CodigoImovel);
   const tipoBase = s(I.TipoImovel), subTipo = s(I.SubTipoImovel);
   const cidade = s(I.Cidade);
-  const titulo = s(I.TituloImovel) || [tipoBase || 'Imóvel rural', cidade ? `em ${cidade}` : ''].join(' ').trim();
+  const titulo = limparTextoFeed(s(I.TituloImovel)) || [tipoBase || 'Imóvel rural', cidade ? `em ${cidade}` : ''].join(' ').trim();
   const t = (tipoBase + ' ' + subTipo + ' ' + titulo).toLowerCase();
   const tipoFinal = t.includes('faz') ? 'fazenda'
     : (t.includes('sít') || t.includes('sit')) ? 'sitio'
@@ -207,12 +221,12 @@ function mapImovelCarga(I, ownerUid, feedUrl) {
     doc: {
       ownerId: ownerUid,
       title: titulo,
-      description: s(I.Observacao),
+      description: limparTextoFeed(s(I.Observacao)),
       type: tipoFinal,
       price: num(I.PrecoVenda),
       totalArea: ehLote ? bruto : ha,
       totalAreaUnit: ehLote ? 'm2' : 'ha',
-      identification: { name: titulo, title: titulo, description: s(I.Observacao), totalAreaInHectares: ha },
+      identification: { name: titulo, title: titulo, description: limparTextoFeed(s(I.Observacao)), totalAreaInHectares: ha },
       location: {
         address: s(I.Endereco), city: cidade, state: s(I.UF).toUpperCase().slice(0, 2),
         country: 'Brasil', zipCode: s(I.CEP),
