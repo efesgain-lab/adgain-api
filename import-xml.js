@@ -171,6 +171,66 @@ function urlDeFeedValida(u) {
   return true;
 }
 
+/** Mapeia um <Imovel> do formato "Carga" (ImobiBrasil, Union…) para o doc AdGain. */
+function mapImovelCarga(I, ownerUid, feedUrl) {
+  const listingId = s(I.CodigoImovel);
+  const tipoBase = s(I.TipoImovel), subTipo = s(I.SubTipoImovel);
+  const cidade = s(I.Cidade);
+  const titulo = s(I.TituloImovel) || [tipoBase || 'Imóvel rural', cidade ? `em ${cidade}` : ''].join(' ').trim();
+  const t = (tipoBase + ' ' + subTipo + ' ' + titulo).toLowerCase();
+  const tipoFinal = t.includes('faz') ? 'fazenda'
+    : (t.includes('sít') || t.includes('sit')) ? 'sitio'
+    : (t.includes('chác') || t.includes('chac')) ? 'chacara'
+    : t.includes('haras') ? 'haras'
+    : (t.includes('terreno') || t.includes('lote')) ? 'terreno'
+    : 'fazenda';
+
+  // Áreas do padrão Carga são m²; feeds rurais costumam mandar hectares —
+  // valor grande (≥ 10.000) tratamos como m², pequeno como ha; lote é sempre m²
+  // e fica EXIBIDO em m² (lotes começam em 150 m² — 0,015 ha ficaria ilegível).
+  const bruto = num(I.AreaTotal) || num(I.AreaUtil);
+  const ehLote = tipoFinal === 'terreno';
+  const ha = ehLote ? bruto / 10000 : (bruto >= 10000 ? bruto / 10000 : bruto);
+
+  const fotosArr = [];
+  for (const f of arr(I.Fotos?.Foto)) {
+    const url = s(f?.URLArquivo);
+    if (!/^https?:\/\//i.test(url) || fotosArr.length >= MAX_FOTOS) continue;
+    if (s(f?.Principal) === '1') fotosArr.unshift(url);
+    else fotosArr.push(url);
+  }
+
+  const lat = num(I.Latitude) || null, lng = num(I.Longitude) || null;
+  const agora = new Date();
+  return {
+    docId: 'xml' + crypto.createHash('md5').update(ownerUid + '|' + listingId).digest('hex').slice(0, 17),
+    doc: {
+      ownerId: ownerUid,
+      title: titulo,
+      description: s(I.Observacao),
+      type: tipoFinal,
+      price: num(I.PrecoVenda),
+      totalArea: ehLote ? bruto : ha,
+      totalAreaUnit: ehLote ? 'm2' : 'ha',
+      identification: { name: titulo, title: titulo, description: s(I.Observacao), totalAreaInHectares: ha },
+      location: {
+        address: s(I.Endereco), city: cidade, state: s(I.UF).toUpperCase().slice(0, 2),
+        country: 'Brasil', zipCode: s(I.CEP),
+        ...(lat && lng ? { coordinates: { lat, lng } } : {}),
+      },
+      media: { gallery: fotosArr, mainPhotoIndex: 0 },
+      isActive: false,
+      status: 'draft',
+      listing: { listingStatus: 'draft' },
+      integration: {
+        source: 'xml-import', listingId, feedUrl: feedUrl || null,
+        importadoEm: agora, pendencia: 'selecionar-parcela',
+      },
+      updatedAt: agora,
+    },
+  };
+}
+
 module.exports = function registerImportXml(app) {
   app.get('/api/import/proxy-feed', async (req, res) => {
     if (req.query.t !== PROXY_FEED_TOKEN) return res.sendStatus(403);
@@ -244,31 +304,47 @@ module.exports = function registerImportXml(app) {
       return res.status(400).json({ error: 'XML inválido: ' + err.message });
     }
 
-    const listings = arr(
+    let formato = 'listingdatafeed';
+    let listings = arr(
       raiz?.ListingDataFeed?.Listings?.Listing ??
       raiz?.listingDataFeed?.listings?.listing ??
       raiz?.Listings?.Listing
     );
-    if (!listings.length) return res.status(400).json({ error: 'nenhum <Listing> encontrado no feed' });
+    if (!listings.length) {
+      // Formato "Carga de Imóveis" (<Carga><Imoveis><Imovel>) — ImobiBrasil, Union…
+      const imoveis = arr(raiz?.Carga?.Imoveis?.Imovel ?? raiz?.carga?.imoveis?.imovel);
+      if (imoveis.length) { listings = imoveis; formato = 'carga'; }
+    }
+    if (!listings.length) return res.status(400).json({ error: 'nenhum <Listing> (VivaReal/ZAP) nem <Imovel> (Carga) encontrado no feed' });
 
     const teto = Math.min(Number(maxItens) || 500, 500);
     const resultado = { criados: 0, atualizados: 0, pulados: 0, urbanosIgnorados: 0, erros: [] };
 
-    // FILTRO RURAL: feeds de CRM misturam urbanos e rurais (ex.: ImobiBrasil).
-    // Só importamos os rurais; tipo declarado sem cara de rural fica de fora.
+    // REGRA DO QUE ENTRA: rurais (fazenda, sítio, chácara, haras…) e
+    // terrenos/lotes (urbanos ou rurais) entram; casa/apartamento/comercial
+    // ficam de fora. Sem tipo declarado, entra.
     const normalizar = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    const ehRuralListing = (listing) => {
+    const entraNaAdGain = (listing) => {
       const d = listing?.Details || listing || {};
-      const tipoTxt = normalizar(d.PropertyType);
-      if (!tipoTxt) return true; // sem tipo declarado: mantém (feeds rurais simples)
-      const texto = tipoTxt + ' ' + normalizar(d.Title);
-      return /(rural|fazend|sit[ie]|chac|haras|rancho|agricol|farm|gleba)/.test(texto);
+      const tipoTxt = formato === 'carga'
+        ? normalizar(s(listing?.TipoImovel) + ' ' + s(listing?.SubTipoImovel))
+        : normalizar(d.PropertyType);
+      if (!tipoTxt.trim()) return true;
+      const titulo = formato === 'carga' ? s(listing?.TituloImovel) : s(d.Title);
+      const texto = tipoTxt + ' ' + normalizar(titulo);
+      return /(rural|fazend|sit[ie]|chac|haras|rancho|agricol|farm|gleba)/.test(texto)
+        || /(terreno|lote|land)/.test(tipoTxt);
     };
 
     for (const listing of listings.slice(0, teto)) {
-      if (!ehRuralListing(listing)) { resultado.urbanosIgnorados++; continue; }
+      // Registro sem código (comum em feed Carga vazio): ignora
+      const codigo = formato === 'carga' ? s(listing?.CodigoImovel) : s(listing?.ListingID ?? listing?.ListingId);
+      if (!codigo) { resultado.pulados++; continue; }
+      if (!entraNaAdGain(listing)) { resultado.urbanosIgnorados++; continue; }
       try {
-        const { docId, doc } = mapListing(listing, String(ownerUid), feedUrl ? String(feedUrl) : null);
+        const { docId, doc } = formato === 'carga'
+          ? mapImovelCarga(listing, String(ownerUid), feedUrl ? String(feedUrl) : null)
+          : mapListing(listing, String(ownerUid), feedUrl ? String(feedUrl) : null);
         const ref = db.collection('properties').doc(docId);
         const atual = await ref.get();
         if (!atual.exists) {
