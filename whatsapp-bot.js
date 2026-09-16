@@ -764,22 +764,50 @@ module.exports = function registerWhatsAppBot(app) {
     try {
       const db = require('./firebase').getDb();
       if (!db) return res.status(500).send('Firestore indisponível');
-      const convs = await db.collection('wa_conversas').orderBy('em', 'desc').limit(40).get();
       const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const fmtTel = (t) => t.length >= 12 ? `(${t.slice(2, 4)}) ${t.slice(4, -4)}-${t.slice(-4)}` : t;
       const fmtHora = (d) => d && d.toDate ? d.toDate().toLocaleString('pt-BR', { timeZone: 'America/Cuiaba', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+      const renderMsgs = (docsMsgs) => docsMsgs.map((m) => {
+        const x = m.data();
+        const doBot = x.dir === 'bot';
+        return `<div class="msg ${doBot ? 'bot' : 'cli'}"><span>${esc(x.texto)}</span><i>${fmtHora(x.em)}</i></div>`;
+      }).join('');
+
+      // Conversa COMPLETA de um número: ?tel=5561...
+      const tel = String(req.query.tel || '').replace(/\D/g, '');
+      if (tel) {
+        const ref = db.collection('wa_conversas').doc(tel);
+        const conv = await ref.get();
+        if (!conv.exists) return res.status(404).send('Conversa não encontrada.');
+        const dados = conv.data();
+        const msgs = await ref.collection('msgs').orderBy('em', 'asc').limit(500).get();
+        return res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conversa completa · ${fmtTel(tel)}</title><style>
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6f1;color:#2b2a27;margin:0;padding:16px;}
+h1{font-size:18px;color:#215c25;margin:0 0 2px}.sub{color:#8a9184;font-size:13px;margin-bottom:14px}
+a{color:#215c25}
+.thread{display:flex;flex-direction:column;gap:6px;max-width:760px}
+.msg{max-width:85%;padding:7px 10px;border-radius:10px;font-size:13px;line-height:1.45;white-space:pre-wrap}
+.msg.cli{background:#eef3e8;align-self:flex-start}
+.msg.bot{background:#dcf3d0;align-self:flex-end}
+.msg i{display:block;font-size:10px;color:#8a9184;font-style:normal;margin-top:3px;text-align:right}
+</style></head><body>
+<h1>💬 ${esc(dados.nome || 'Sem nome')} · ${fmtTel(tel)}</h1>
+<div class="sub"><a href="/api/whatsapp/conversas?token=${esc(req.query.token)}">← voltar às conversas</a> · conversa completa (${msgs.size} mensagens)</div>
+<div class="thread">${renderMsgs(msgs.docs) || '<p>Sem mensagens.</p>'}</div></body></html>`);
+      }
+
+      const convs = await db.collection('wa_conversas').orderBy('em', 'desc').limit(40).get();
       let corpo = '';
       for (const c of convs.docs) {
         const dados = c.data();
         const msgs = await c.ref.collection('msgs').orderBy('em', 'desc').limit(15).get();
-        const linhas = msgs.docs.reverse().map((m) => {
-          const x = m.data();
-          const doBot = x.dir === 'bot';
-          return `<div class="msg ${doBot ? 'bot' : 'cli'}"><span>${esc(x.texto)}</span><i>${fmtHora(x.em)}</i></div>`;
-        }).join('');
+        const linhas = renderMsgs(msgs.docs.reverse());
+        const linkCompleta = `/api/whatsapp/conversas?token=${esc(req.query.token)}&tel=${c.id}`;
         corpo += `<details><summary><b>${esc(dados.nome || 'Sem nome')}</b> · ${fmtTel(c.id)}` +
           `<span class="ult">${esc(dados.ultimaMsg)}</span><em>${fmtHora(dados.em)}</em></summary>` +
-          `<div class="thread">${linhas}</div></details>`;
+          `<div class="thread"><a class="tudo" href="${linkCompleta}">📜 Ver conversa completa</a>${linhas}</div></details>`;
       }
       res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="60">
@@ -796,6 +824,7 @@ summary em{color:#b3b8ad;font-size:11px;font-style:normal}
 .msg.cli{background:#eef3e8;align-self:flex-start}
 .msg.bot{background:#dcf3d0;align-self:flex-end}
 .msg i{display:block;font-size:10px;color:#8a9184;font-style:normal;margin-top:3px;text-align:right}
+.tudo{font-size:12px;color:#215c25;align-self:center;margin-bottom:2px}
 </style></head><body>
 <h1>🤖 Conversas do robô AdGain (65 9667-9565)</h1>
 <div class="sub">Clique numa conversa para abrir · atualiza sozinha a cada 60s · ${convs.size} conversas recentes</div>
