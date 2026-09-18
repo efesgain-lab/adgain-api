@@ -220,6 +220,41 @@ module.exports = function registerCampanha(app) {
     }
   });
 
+  // ---------- troca só a imagem do cabeçalho (mantém o template já aprovado) ----------
+  // POST /api/whatsapp/campanha/header-media?token=...  body: { imagemBase64, mime? }
+  // Sobe a imagem nova ao /media do número e atualiza wa_campanha_config/global.headerMediaId
+  // SEM criar/reaprovar template — o template aprovado só declara "tem cabeçalho IMAGE";
+  // a imagem de fato usada em cada envio é sempre a do headerMediaId atual.
+  app.post('/api/whatsapp/campanha/header-media', async (req, res) => {
+    if (!auth(req, res)) return;
+    const db = getDb();
+    if (!db) return res.status(500).json({ error: 'Firestore indisponível' });
+    const { imagemBase64, mime } = req.body || {};
+    if (!imagemBase64) return res.status(400).json({ error: 'imagemBase64 obrigatório' });
+    const buf = Buffer.from(imagemBase64, 'base64');
+    const tipo = mime || 'image/jpeg';
+    const token = process.env.WHATSAPP_TOKEN;
+    try {
+      const fd = new FormData();
+      fd.append('messaging_product', 'whatsapp');
+      fd.append('file', new Blob([buf], { type: tipo }), 'criativo.jpg');
+      const media = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_ID}/media`,
+        { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd }
+      ).then((r) => r.json());
+      if (!media.id) return res.status(502).json({ etapa: 'media', resposta: media });
+
+      await db.collection('wa_campanha_config').doc('global').set(
+        { headerMediaId: media.id, atualizadoEm: new Date() },
+        { merge: true }
+      );
+      console.log('[campanha/header-media] novo headerMediaId:', media.id);
+      res.json({ ok: true, mediaId: media.id });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ---------- template de retomada (reabre conversa fora da janela de 24h) ----------
   // GET  ?do=1 cria o template; sem do, lista o status dele.
   // POST /api/whatsapp/campanha/retomada  body {numeros:[...]}  -> envia (pula opt-out)
