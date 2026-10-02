@@ -100,7 +100,7 @@ function fotos(media) {
 function mapListing(listing, ownerUid, feedUrl) {
   const d = listing.Details || {};
   const loc = listing.Location || {};
-  const titulo = s(d.Title || listing.Title) || 'Imóvel rural importado';
+  const titulo = s(d.Title || listing.Title) || 'Imóvel importado';
   const cidade = s(loc.City);
   const uf = s(loc.State?.['@_abbreviation'] || loc.State?.abbreviation || loc.State);
   const lat = num(loc.Latitude) || null;
@@ -440,7 +440,8 @@ module.exports = function registerImportXml(app) {
       const tipoTxt = formato === 'carga'
         ? normalizar(s(listing?.TipoImovel) + ' ' + s(listing?.SubTipoImovel))
         : normalizar(d.PropertyType);
-      const titulo = formato === 'carga' ? s(listing?.TituloImovel) : s(d.Title);
+      // VivaReal: <Title> fica direto no <Listing>; alguns CRMs usam <Details><Title>
+      const titulo = formato === 'carga' ? s(listing?.TituloImovel) : s(d.Title || listing?.Title);
       const tit = normalizar(titulo).replace(/^[^a-z0-9]+/, '');
       // Mesma regra do importador do app (xml-import.service.ts → classificarTipo):
       // 1) primeira palavra do título diz o que o imóvel É ("Casa no Condomínio
