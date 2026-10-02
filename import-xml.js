@@ -219,28 +219,37 @@ async function geocodificar({ cep, rua, numero, bairro, cidade, uf }) {
   const chave = [cep, rua, numero, bairro, cidade, uf].map((v) => String(v || '').toLowerCase().trim()).join('|');
   if (geoCache.has(chave)) return geoCache.get(chave);
   let out = null;
-  const cepNum = String(cep || '').replace(/\D/g, '');
-  if (cepNum.length === 8) {
-    try {
-      const r = await fetch(`https://brasilapi.com.br/api/cep/v2/${cepNum}`, { headers: { accept: 'application/json' } });
-      if (r.ok) {
-        const j = await r.json();
-        const lat = Number(j?.location?.coordinates?.latitude), lng = Number(j?.location?.coordinates?.longitude);
-        if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) out = { lat, lng, precisao: 'cep' };
-      }
-    } catch { /* segue para o Nominatim */ }
-  }
-  if (!out && rua && cidade) {
-    const p = await nominatim({ street: `${numero ? numero + ' ' : ''}${rua}`, city: cidade, state: uf || '', country: 'Brazil' });
+  // 1) Rua (sem número: o OSM raramente tem numeração no Brasil e o número
+  //    faz a busca falhar). Rodovia não serve como endereço de lote.
+  const ruaOk = rua && !/^(rod(ovia)?\.?|estrada|br[- ]?\d|sp[- ]?\d)/i.test(String(rua).trim());
+  if (ruaOk && cidade) {
+    const p = await nominatim({ street: String(rua), city: cidade, state: uf || '', country: 'Brazil' });
     if (p) out = { ...p, precisao: 'endereco' };
   }
-  if (!out && bairro && cidade) {
+  // 2) Bairro/condomínio
+  if (!out && bairro && cidade && !/^(zona rural|centro|area rural)$/i.test(String(bairro).trim())) {
     const p = await nominatim({ q: `${bairro}, ${cidade}, ${uf || ''}, Brasil` });
     if (p) out = { ...p, precisao: 'bairro' };
   }
+  // 3) Município. ATENÇÃO: a coordenada do CEP na BrasilAPI é o centro do
+  //    município (CEPs diferentes de Sorocaba devolvem o mesmo ponto) — por
+  //    isso ela NÃO é usada como localização do imóvel.
   if (!out && cidade) {
     const p = await nominatim({ city: cidade, state: uf || '', country: 'Brazil' });
     if (p) out = { ...p, precisao: 'cidade' };
+  }
+  if (!out) {
+    const cepNum = String(cep || '').replace(/\D/g, '');
+    if (cepNum.length === 8) {
+      try {
+        const r = await fetch(`https://brasilapi.com.br/api/cep/v2/${cepNum}`, { headers: { accept: 'application/json' } });
+        if (r.ok) {
+          const j = await r.json();
+          const lat = Number(j?.location?.coordinates?.latitude), lng = Number(j?.location?.coordinates?.longitude);
+          if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) out = { lat, lng, precisao: 'cidade' };
+        }
+      } catch { /* sem localização */ }
+    }
   }
   if (geoCache.size > 20000) geoCache.clear();
   geoCache.set(chave, out);
