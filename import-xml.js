@@ -343,10 +343,16 @@ module.exports = function registerImportXml(app) {
       const tipoTxt = formato === 'carga'
         ? normalizar(s(listing?.TipoImovel) + ' ' + s(listing?.SubTipoImovel))
         : normalizar(d.PropertyType);
-      if (!tipoTxt.trim()) return true;
       const titulo = formato === 'carga' ? s(listing?.TituloImovel) : s(d.Title);
-      const texto = tipoTxt + ' ' + normalizar(titulo);
-      return /(rural|fazend|sit[ie]|chac|haras|rancho|agricol|farm|gleba)/.test(texto)
+      const tit = normalizar(titulo).replace(/^[^a-z0-9]+/, '');
+      // Mesma regra do importador do app (xml-import.service.ts → classificarTipo):
+      // 1) primeira palavra do título diz o que o imóvel É ("Casa no Condomínio
+      //    Chácara X" é urbana; "Haras" enviado como Residential/Home é rural);
+      // 2) senão, decide pelo PropertyType.
+      if (/^(fazenda|sitio|chacara|haras|rancho|gleba|estancia|granja|area|terreno|lote|propriedade rural|imovel rural)\b/.test(tit)) return true;
+      if (/^(casa|sobrado|apartamento|apto|cobertura|flat|studio|kitnet|kitchenette|loft|sala|salao|loja|galpao|barracao|predio|edificio|ponto|conjunto|consultorio|garagem|box|hotel|pousada|duplex|triplex|village|bangalo|imovel comercial)\b/.test(tit)) return false;
+      if (!tipoTxt.trim()) return true;
+      return /(rural|fazend|sit[ie]|chac|haras|rancho|agricol|agricultur|farm|ranch|gleba)/.test(tipoTxt)
         || /(terreno|lote|land)/.test(tipoTxt);
     };
 
