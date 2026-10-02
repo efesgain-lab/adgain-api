@@ -174,6 +174,79 @@ function proxyRateOk(ip) {
   return reg.n <= 60; // 60 buscas/hora por IP
 }
 
+// ============================================================
+// Geocodificação de endereço (lotes < 1 ha publicam por PONTO)
+// GET /api/import/geocode?t=<PROXY_FEED_TOKEN>&cep=&rua=&numero=&bairro=&cidade=&uf=
+//   -> { lat, lng, precisao: 'cep'|'endereco'|'bairro'|'cidade' } | 404
+// Fontes: BrasilAPI (CEP v2) e Nominatim/OSM — este último exige no máx.
+// 1 req/s e User-Agent identificado, por isso a fila e o cache.
+// ============================================================
+const geoCache = new Map(); // chave -> { lat, lng, precisao } | null
+const geoHits = new Map();  // ip -> { n, desde }
+function geoRateOk(ip) {
+  const agora = Date.now();
+  const reg = geoHits.get(ip) || { n: 0, desde: agora };
+  if (agora - reg.desde > 60 * 60 * 1000) { reg.n = 0; reg.desde = agora; }
+  reg.n++;
+  geoHits.set(ip, reg);
+  if (geoHits.size > 5000) geoHits.clear();
+  return reg.n <= 800; // uma carteira grande tem centenas de lotes
+}
+let filaNominatim = Promise.resolve();
+function nominatim(params) {
+  const exec = async () => {
+    const qs = new URLSearchParams({ format: 'jsonv2', limit: '1', countrycodes: 'br', ...params });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    try {
+      const r = await fetch('https://nominatim.openstreetmap.org/search?' + qs.toString(), {
+        signal: ctrl.signal,
+        headers: { 'user-agent': 'AdGain-FeedImporter/1.0 (contato@adgain.com.br)', 'accept-language': 'pt-BR' },
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const a = Array.isArray(j) ? j[0] : null;
+      const lat = Number(a?.lat), lng = Number(a?.lon);
+      return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+    } catch { return null; } finally { clearTimeout(timer); }
+  };
+  // 1 requisição por vez, com 1,1 s de intervalo (política de uso do Nominatim)
+  const p = filaNominatim.then(exec);
+  filaNominatim = p.then(() => new Promise((ok) => setTimeout(ok, 1100)), () => null);
+  return p;
+}
+async function geocodificar({ cep, rua, numero, bairro, cidade, uf }) {
+  const chave = [cep, rua, numero, bairro, cidade, uf].map((v) => String(v || '').toLowerCase().trim()).join('|');
+  if (geoCache.has(chave)) return geoCache.get(chave);
+  let out = null;
+  const cepNum = String(cep || '').replace(/\D/g, '');
+  if (cepNum.length === 8) {
+    try {
+      const r = await fetch(`https://brasilapi.com.br/api/cep/v2/${cepNum}`, { headers: { accept: 'application/json' } });
+      if (r.ok) {
+        const j = await r.json();
+        const lat = Number(j?.location?.coordinates?.latitude), lng = Number(j?.location?.coordinates?.longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) out = { lat, lng, precisao: 'cep' };
+      }
+    } catch { /* segue para o Nominatim */ }
+  }
+  if (!out && rua && cidade) {
+    const p = await nominatim({ street: `${numero ? numero + ' ' : ''}${rua}`, city: cidade, state: uf || '', country: 'Brazil' });
+    if (p) out = { ...p, precisao: 'endereco' };
+  }
+  if (!out && bairro && cidade) {
+    const p = await nominatim({ q: `${bairro}, ${cidade}, ${uf || ''}, Brasil` });
+    if (p) out = { ...p, precisao: 'bairro' };
+  }
+  if (!out && cidade) {
+    const p = await nominatim({ city: cidade, state: uf || '', country: 'Brazil' });
+    if (p) out = { ...p, precisao: 'cidade' };
+  }
+  if (geoCache.size > 20000) geoCache.clear();
+  geoCache.set(chave, out);
+  return out;
+}
+
 function urlDeFeedValida(u) {
   let parsed;
   try { parsed = new URL(u); } catch { return false; }
@@ -246,6 +319,21 @@ function mapImovelCarga(I, ownerUid, feedUrl) {
 }
 
 module.exports = function registerImportXml(app) {
+  app.get('/api/import/geocode', async (req, res) => {
+    if (req.query.t !== PROXY_FEED_TOKEN) return res.sendStatus(403);
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '?';
+    if (!geoRateOk(ip)) return res.status(429).json({ error: 'Muitas buscas — tente em alguns minutos.' });
+    const q = (k) => String(req.query[k] || '').slice(0, 120);
+    if (!q('cidade') && !q('cep')) return res.status(400).json({ error: 'cidade ou cep obrigatório' });
+    try {
+      const r = await geocodificar({ cep: q('cep'), rua: q('rua'), numero: q('numero'), bairro: q('bairro'), cidade: q('cidade'), uf: q('uf') });
+      if (!r) return res.status(404).json({ error: 'endereço não localizado' });
+      res.json(r);
+    } catch (e) {
+      res.status(502).json({ error: 'geocodificação indisponível' });
+    }
+  });
+
   app.get('/api/import/proxy-feed', async (req, res) => {
     if (req.query.t !== PROXY_FEED_TOKEN) return res.sendStatus(403);
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '?';
